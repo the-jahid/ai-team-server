@@ -678,6 +678,11 @@ export class AdminController {
       dto.addDays,
     );
   }
+  // src/admin/admin.controller.ts
+@Get('groups/:id/agents')
+getGroupAgents(@Param() p: GroupIdParam) {
+  return this.admin.listGroupAgents(p.id);
+}
 
   /** User: deactivate (opt-out) their GROUP assignment */
   @Post('my/group-assignment/deactivate')

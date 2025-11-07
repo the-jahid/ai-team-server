@@ -167,6 +167,23 @@ export class AdminService {
     });
   }
 
+    // src/admin/admin.service.ts
+async listGroupAgents(groupId: string) {
+  const group = await this.prisma.agentGroup.findUnique({ where: { id: groupId } });
+  if (!group) throw new NotFoundException(`AgentGroup "${groupId}" not found`);
+
+  const items = await this.prisma.agentGroupItem.findMany({
+    where: { groupId },
+    select: { agentName: true, createdAt: true, updatedAt: true },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  return {
+    group: { id: group.id, name: group.name, isActive: group.isActive },
+    agents: items.map(i => i.agentName),
+    count: items.length,
+  };
+} 
   /* --------------------------- public API (email) -------------------------- */
 
   /** Assign a single agent to a user by email. */
