@@ -219,7 +219,7 @@ export class AdminService {
       opts.durationDays ?? undefined,
     );
 
-    return this.prisma.$transaction(async (tx) => {
+    return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const results: AssignedAgent[] = [];
 
       for (const agentName of agentNames) {
@@ -442,7 +442,7 @@ export class AdminService {
 
     const next = Array.from(new Set(agentNames)); // dedupe
 
-    await this.prisma.$transaction(async (tx) => {
+    await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       // delete all not in next
       await tx.agentGroupItem.deleteMany({
         where: {
@@ -532,7 +532,7 @@ export class AdminService {
     });
 
     // Materialize per-agent assignments (legacy behavior)
-    return this.prisma.$transaction(async (tx) => {
+    return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const results: AssignedAgent[] = [];
       for (const agentName of agentNames) {
         const existingActive = await tx.assignedAgent.findFirst({
@@ -634,7 +634,7 @@ export class AdminService {
     }
 
     try {
-      return await this.prisma.$transaction(async (tx) => {
+      return await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
         const group = await tx.agentGroup.create({
           data: {
             name: input.name.trim(),
