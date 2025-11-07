@@ -679,10 +679,16 @@ export class AdminController {
     );
   }
   // src/admin/admin.controller.ts
-@Get('groups/:id/agents')
-getGroupAgents(@Param() p: GroupIdParam) {
-  return this.admin.listGroupAgents(p.id);
-}
+  @Get('groups/:id/agents')
+  getGroupAgents(@Param() p: GroupIdParam) {
+    return this.admin.listGroupAgents(p.id);
+  }
+
+    /** GET /users/emails -> string[] (all user emails) */
+  @Get('emails')
+  async listAllEmails(): Promise<string[]> {
+    return this.admin.listAllEmails();
+  }
 
   /** User: deactivate (opt-out) their GROUP assignment */
   @Post('my/group-assignment/deactivate')

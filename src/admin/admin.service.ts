@@ -861,4 +861,14 @@ async listGroupAgents(groupId: string) {
       data: { isActive: false },
     });
   }
+
+  
+  /** Return all user emails as a flat string[] */
+  async listAllEmails(): Promise<string[]> {
+    const rows = await this.prisma.user.findMany({
+      select: { email: true },
+      orderBy: { createdAt: 'desc' }, // optional
+    });
+    return rows.map((r) => r.email);
+  }
 }
