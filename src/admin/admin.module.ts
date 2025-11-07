@@ -1,15 +1,14 @@
 // src/admin/admin.module.ts
 import { Module } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import {
-  UserAgentSelectionByEmailController,
-  UserAgentSelectionByIdController,
-} from './admin.controller';
-import { UserAgentSelectionService } from './admin.service';
+
+import { AdminService } from './admin.service';
+import { AdminController } from './admin.controller';
+
 
 @Module({
-  controllers: [UserAgentSelectionByIdController, UserAgentSelectionByEmailController],
-  providers: [PrismaService, UserAgentSelectionService],
-  exports: [UserAgentSelectionService],
+  controllers: [AdminController],
+  providers: [PrismaService, AdminService],
+  exports: [AdminService],
 })
 export class AdminModule {}

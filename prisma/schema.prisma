@@ -26,12 +26,107 @@ enum AgentName {
 }
 
 model User {
-  id             String       @id @default(uuid())
-  email          String       @unique
-  oauthId        String       @unique
-  username       String?
-  // Multiple selected agents (empty by default)
-  selectedAgents AgentName[]  @default([])
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  id        String           @id @default(uuid())
+  email     String           @unique
+  oauthId   String           @unique
+  username  String?
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  // Per-agent assignments with timing & expiry
+  agents    AssignedAgent[]
+  // Per-group assignments with timing & expiry
+  groups    AssignedGroup[]
+}
+
+model AssignedAgent {
+  id           String     @id @default(uuid())
+  userId       String
+  agentName    AgentName
+
+  // When access starts (defaults now) and when it expires
+  startsAt     DateTime   @default(now())
+  expiresAt    DateTime?
+
+  // Optional helper: store the granted duration in days (custom)
+  durationDays Int?
+
+  // Only one active assignment per (user, agent)
+  isActive     Boolean    @default(true)
+
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
+  @@index([expiresAt])
+  @@unique([userId, agentName, isActive], map: "uniq_active_agent_per_user")
+}
+
+/* =========================
+ * Agent Groups (admin-defined)
+ * ========================= */
+
+model AgentGroup {
+  id           String            @id @default(uuid())
+  name         String            @unique
+  description  String?
+  isActive     Boolean           @default(true)
+
+  // members
+  items        AgentGroupItem[]
+
+  // assignments (users who have this group)
+  assignments  AssignedGroup[]
+
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@index([isActive])
+}
+
+model AgentGroupItem {
+  id        String      @id @default(uuid())
+  groupId   String
+  agentName AgentName
+
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  group     AgentGroup  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([groupId])
+  @@unique([groupId, agentName], map: "uniq_agent_per_group")
+}
+
+/* =========================
+ * Group assignments to users
+ * ========================= */
+
+model AssignedGroup {
+  id           String      @id @default(uuid())
+  userId       String
+  groupId      String
+
+  // When access starts (defaults now) and when it expires
+  startsAt     DateTime    @default(now())
+  expiresAt    DateTime?
+
+  // Optional helper: store the granted duration in days (custom)
+  durationDays Int?
+
+  // Only one active assignment per (user, group)
+  isActive     Boolean     @default(true)
+
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group        AgentGroup  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
+  @@index([groupId])
+  @@index([expiresAt])
+  @@unique([userId, groupId, isActive], map: "uniq_active_group_per_user")
 }

@@ -1,238 +1,853 @@
-// src/user/services/user-agent-selection.service.ts
+// src/admin/admin.service.ts
 import {
-  BadRequestException,
   Injectable,
+  BadRequestException,
   NotFoundException,
+  ConflictException,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { AgentName, Prisma } from '@prisma/client';
+import {
+  AgentName,
+  AssignedAgent,
+  AssignedGroup,
+  AgentGroup,
+  Prisma,
+  User,
+} from '@prisma/client';
 
-type UserSelector = { id: string } | { email: string };
+/* ============================================
+ * Types
+ * ============================================ */
 
-/**
- * Service dedicated to updating the user's selected agents (enum[]).
- * Supports identifying users by ID or by Email.
- */
+type BaseAssignOpts = {
+  /** Optional start time (defaults to now in DB) */
+  startsAt?: Date | string;
+  /** Optional fixed expiry; if provided it overrides durationDays */
+  expiresAt?: Date | string | null;
+  /** If set, compute expiresAt = startsAt (or now) + durationDays */
+  durationDays?: number | null;
+  /** Defaults true in DB */
+  isActive?: boolean;
+};
+
+type GroupSelector =
+  | { groupId: string; groupName?: never }
+  | { groupId?: never; groupName: string };
+
+type Paginated<T> = {
+  data: T[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+};
+
+type ListGroupsParams = {
+  page?: number;
+  limit?: number;
+  nameContains?: string;
+  isActive?: boolean;
+  sortBy?: 'createdAt' | 'updatedAt' | 'name';
+  sortOrder?: 'asc' | 'desc';
+};
+
+/* ============================================
+ * Service
+ * ============================================ */
+
 @Injectable()
-export class UserAgentSelectionService {
+export class AdminService {
   constructor(private readonly prisma: PrismaService) {}
 
-  // ----------------- PUBLIC (by ID) -----------------
+  /* ------------------------------- helpers ------------------------------- */
 
-  /** Return current selection for a user (by ID) */
-  async getSelectedAgents(userId: string): Promise<AgentName[]> {
-    const user = await this.resolveUser({ id: userId }, { selectedAgents: true });
-    return user.selectedAgents ?? [];
+  private coerceDate(v?: Date | string | null): Date | null | undefined {
+    if (v === undefined) return undefined;
+    if (v === null) return null;
+    return v instanceof Date ? v : new Date(v);
   }
 
-  /** Replace entire selection (by ID) */
-  async setSelectedAgents(
-    userId: string,
-    agents: (AgentName | string)[],
-  ): Promise<AgentName[]> {
-    const clean = this.validateAndNormalize(agents);
-    await this.resolveUser({ id: userId }, { id: true });
+  /** compute expiresAt from startsAt and durationDays, if provided */
+  private computeExpiry(
+    startsAt?: Date | string,
+    expiresAt?: Date | string | null,
+    durationDays?: number | null,
+  ): { startsAt?: Date; expiresAt?: Date | null } {
+    const s = this.coerceDate(startsAt) ?? undefined;
+    const e = this.coerceDate(expiresAt);
+    if (e !== undefined) {
+      return { startsAt: s, expiresAt: e };
+    }
+    if (durationDays && durationDays > 0) {
+      const base = s ?? new Date();
+      const out = new Date(base);
+      out.setDate(out.getDate() + durationDays);
+      return { startsAt: s, expiresAt: out };
+    }
+    return { startsAt: s, expiresAt: undefined };
+  }
 
-    const updated = await this.prisma.user.update({
-      where: { id: userId },
-      data: { selectedAgents: { set: clean } },
-      select: { selectedAgents: true },
+  /** Fetch user by email; ALWAYS error if not found (no auto-create). */
+  private async getUserByEmail(email: string): Promise<User> {
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    if (!user) throw new NotFoundException(`User with email "${email}" not found`);
+    return user;
+  }
+
+  /** ensure one active record per (user, agent). If already active, update it; else create */
+  private async upsertActiveAssignment(params: {
+    userId: string;
+    agentName: AgentName;
+    startsAt?: Date;
+    expiresAt?: Date | null;
+    durationDays?: number | null;
+    isActive?: boolean;
+  }): Promise<AssignedAgent> {
+    const { userId, agentName, startsAt, expiresAt, durationDays, isActive } = params;
+
+    const existingActive = await this.prisma.assignedAgent.findFirst({
+      where: { userId, agentName, isActive: true },
     });
-    return updated.selectedAgents;
-  }
 
-  /** Add one or more agents (by ID) */
-  async addAgents(
-    userId: string,
-    agentsToAdd: (AgentName | string)[],
-  ): Promise<AgentName[]> {
-    const add = this.validateAndNormalize(agentsToAdd);
-    const current = await this.getSelectedAgents(userId);
-    const set = this.dedupe([...current, ...add]);
+    if (existingActive) {
+      return this.prisma.assignedAgent.update({
+        where: { id: existingActive.id },
+        data: {
+          startsAt: startsAt ?? existingActive.startsAt,
+          // if expiresAt is undefined keep current; if null, clear; if Date set new
+          ...(expiresAt !== undefined ? { expiresAt } : {}),
+          durationDays: durationDays ?? existingActive.durationDays,
+          ...(typeof isActive === 'boolean' ? { isActive } : {}),
+        },
+      });
+    }
 
-    const updated = await this.prisma.user.update({
-      where: { id: userId },
-      data: { selectedAgents: { set } },
-      select: { selectedAgents: true },
+    return this.prisma.assignedAgent.create({
+      data: {
+        userId,
+        agentName,
+        startsAt: startsAt ?? undefined, // DB default now()
+        expiresAt: expiresAt ?? undefined,
+        durationDays: durationDays ?? undefined,
+        isActive: typeof isActive === 'boolean' ? isActive : true,
+      },
     });
-    return updated.selectedAgents;
   }
 
-  /** Remove one or more agents (by ID) */
-  async removeAgents(
-    userId: string,
-    agentsToRemove: (AgentName | string)[],
-  ): Promise<AgentName[]> {
-    const remove = new Set(this.validateAndNormalize(agentsToRemove));
-    const current = await this.getSelectedAgents(userId);
-    const set = current.filter((a) => !remove.has(a));
+  /** ensure one active record per (user, group). If already active, update it; else create */
+  private async upsertActiveGroupAssignment(params: {
+    userId: string;
+    groupId: string;
+    startsAt?: Date;
+    expiresAt?: Date | null;
+    durationDays?: number | null;
+    isActive?: boolean;
+  }): Promise<AssignedGroup> {
+    const { userId, groupId, startsAt, expiresAt, durationDays, isActive } = params;
 
-    const updated = await this.prisma.user.update({
-      where: { id: userId },
-      data: { selectedAgents: { set } },
-      select: { selectedAgents: true },
+    const existingActive = await this.prisma.assignedGroup.findFirst({
+      where: { userId, groupId, isActive: true },
     });
-    return updated.selectedAgents;
-  }
 
-  /** Toggle a single agent (by ID) */
-  async toggleAgent(userId: string, agent: AgentName | string): Promise<AgentName[]> {
-    const [normalized] = this.validateAndNormalize([agent]);
-    const current = await this.getSelectedAgents(userId);
-    const exists = current.includes(normalized);
-    const set = exists ? current.filter((a) => a !== normalized) : this.dedupe([...current, normalized]);
+    if (existingActive) {
+      return this.prisma.assignedGroup.update({
+        where: { id: existingActive.id },
+        data: {
+          startsAt: startsAt ?? existingActive.startsAt,
+          ...(expiresAt !== undefined ? { expiresAt } : {}),
+          durationDays: durationDays ?? existingActive.durationDays,
+          ...(typeof isActive === 'boolean' ? { isActive } : {}),
+        },
+      });
+    }
 
-    const updated = await this.prisma.user.update({
-      where: { id: userId },
-      data: { selectedAgents: { set } },
-      select: { selectedAgents: true },
+    return this.prisma.assignedGroup.create({
+      data: {
+        userId,
+        groupId,
+        startsAt: startsAt ?? undefined,
+        expiresAt: expiresAt ?? undefined,
+        durationDays: durationDays ?? undefined,
+        isActive: typeof isActive === 'boolean' ? isActive : true,
+      },
     });
-    return updated.selectedAgents;
   }
 
-  /** Clear all (by ID) */
-  async clearAgents(userId: string): Promise<AgentName[]> {
-    await this.resolveUser({ id: userId }, { id: true });
-    const updated = await this.prisma.user.update({
-      where: { id: userId },
-      data: { selectedAgents: { set: [] } },
-      select: { selectedAgents: true },
+  /* --------------------------- public API (email) -------------------------- */
+
+  /** Assign a single agent to a user by email. */
+  async assignAgentByEmail(
+    email: string,
+    agentName: AgentName,
+    opts: BaseAssignOpts = {},
+  ): Promise<AssignedAgent> {
+    if (!email?.trim()) throw new BadRequestException('email is required');
+
+    const user = await this.getUserByEmail(email.trim());
+
+    const { startsAt, expiresAt } = this.computeExpiry(
+      opts.startsAt,
+      opts.expiresAt,
+      opts.durationDays ?? undefined,
+    );
+
+    return this.upsertActiveAssignment({
+      userId: user.id,
+      agentName,
+      startsAt,
+      expiresAt,
+      durationDays: opts.durationDays ?? null,
+      isActive: opts.isActive,
     });
-    return updated.selectedAgents;
   }
 
-  // ----------------- PUBLIC (by Email) -----------------
+  /** Assign multiple agents to a user by email (single transaction). */
+  async assignAgentsByEmail(
+    email: string,
+    agentNames: AgentName[],
+    opts: BaseAssignOpts = {},
+  ): Promise<AssignedAgent[]> {
+    if (!email?.trim()) throw new BadRequestException('email is required');
+    if (!Array.isArray(agentNames) || agentNames.length === 0) {
+      throw new BadRequestException('agentNames must be a non-empty array');
+    }
 
-  /** Return current selection (by Email) */
+    const user = await this.getUserByEmail(email.trim());
+    const { startsAt, expiresAt } = this.computeExpiry(
+      opts.startsAt,
+      opts.expiresAt,
+      opts.durationDays ?? undefined,
+    );
+
+    return this.prisma.$transaction(async (tx) => {
+      const results: AssignedAgent[] = [];
+
+      for (const agentName of agentNames) {
+        const existingActive = await tx.assignedAgent.findFirst({
+          where: { userId: user.id, agentName, isActive: true },
+        });
+
+        if (existingActive) {
+          const updated = await tx.assignedAgent.update({
+            where: { id: existingActive.id },
+            data: {
+              startsAt: startsAt ?? existingActive.startsAt,
+              ...(expiresAt !== undefined ? { expiresAt } : {}),
+              durationDays: opts.durationDays ?? existingActive.durationDays,
+              ...(typeof opts.isActive === 'boolean' ? { isActive: opts.isActive } : {}),
+            },
+          });
+          results.push(updated);
+        } else {
+          const created = await tx.assignedAgent.create({
+            data: {
+              userId: user.id,
+              agentName,
+              startsAt: startsAt ?? undefined,
+              expiresAt: expiresAt ?? undefined,
+              durationDays: opts.durationDays ?? undefined,
+              isActive: typeof opts.isActive === 'boolean' ? opts.isActive : true,
+            },
+          });
+          results.push(created);
+        }
+      }
+
+      return results;
+    });
+  }
+
+  /** Deactivate an active assignment for a user by email. */
+  async deactivateAgentByEmail(email: string, agentName: AgentName): Promise<AssignedAgent> {
+    const user = await this.getUserByEmail(email.trim());
+    const existingActive = await this.prisma.assignedAgent.findFirst({
+      where: { userId: user.id, agentName, isActive: true },
+    });
+    if (!existingActive) {
+      throw new NotFoundException(`Active assignment for ${agentName} not found for ${email}`);
+    }
+    return this.prisma.assignedAgent.update({
+      where: { id: existingActive.id },
+      data: { isActive: false },
+    });
+  }
+
+  /** List assignments for a user by email. */
+  async listAssignmentsByEmail(email: string, activeOnly = false): Promise<AssignedAgent[]> {
+    const user = await this.getUserByEmail(email.trim());
+    return this.prisma.assignedAgent.findMany({
+      where: { userId: user.id, ...(activeOnly ? { isActive: true } : {}) },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  /** Get selected (active & not expired) agent names for a user by email. */
   async getSelectedAgentsByEmail(email: string): Promise<AgentName[]> {
-    const user = await this.resolveUser({ email }, { selectedAgents: true });
-    return user.selectedAgents ?? [];
-  }
+    if (!email?.trim()) throw new BadRequestException('email is required');
+    const user = await this.getUserByEmail(email.trim());
 
-  /** Replace entire selection (by Email) */
-  async setSelectedAgentsByEmail(
-    email: string,
-    agents: (AgentName | string)[],
-  ): Promise<AgentName[]> {
-    const clean = this.validateAndNormalize(agents);
-    const u = await this.resolveUser({ email }, { id: true });
-
-    const updated = await this.prisma.user.update({
-      where: { id: u.id },
-      data: { selectedAgents: { set: clean } },
-      select: { selectedAgents: true },
+    const now = new Date();
+    const rows = await this.prisma.assignedAgent.findMany({
+      where: {
+        userId: user.id,
+        isActive: true,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      },
+      select: { agentName: true },
+      orderBy: { createdAt: 'desc' },
     });
-    return updated.selectedAgents;
+
+    return rows.map((r) => r.agentName);
   }
 
-  /** Add one or more agents (by Email) */
-  async addAgentsByEmail(
-    email: string,
-    agentsToAdd: (AgentName | string)[],
-  ): Promise<AgentName[]> {
-    const add = this.validateAndNormalize(agentsToAdd);
-    const current = await this.getSelectedAgentsByEmail(email);
-    const set = this.dedupe([...current, ...add]);
+  /* --------------------------- GROUP CRUD --------------------------- */
 
-    const u = await this.resolveUser({ email }, { id: true });
-    const updated = await this.prisma.user.update({
-      where: { id: u.id },
-      data: { selectedAgents: { set } },
-      select: { selectedAgents: true },
+  /** Create a group (optionally ensure unique name). */
+  async createAgentGroup(input: {
+    name: string;
+    description?: string;
+    isActive?: boolean;
+  }): Promise<AgentGroup> {
+    try {
+      return await this.prisma.agentGroup.create({
+        data: {
+          name: input.name.trim(),
+          description: input.description,
+          isActive: input.isActive ?? true,
+        },
+      });
+    } catch (e: any) {
+      if (e?.code === 'P2002') {
+        throw new ConflictException(`AgentGroup name "${input.name}" already exists`);
+      }
+      throw e;
+    }
+  }
+
+  /** Update a group by id. */
+  async updateAgentGroup(
+    id: string,
+    input: { name?: string; description?: string; isActive?: boolean },
+  ): Promise<AgentGroup> {
+    try {
+      return await this.prisma.agentGroup.update({
+        where: { id },
+        data: {
+          ...(input.name ? { name: input.name.trim() } : {}),
+          ...(input.description !== undefined ? { description: input.description } : {}),
+          ...(typeof input.isActive === 'boolean' ? { isActive: input.isActive } : {}),
+        },
+      });
+    } catch (e: any) {
+      if (e?.code === 'P2025') {
+        throw new NotFoundException(`AgentGroup "${id}" not found`);
+      }
+      if (e?.code === 'P2002') {
+        throw new ConflictException(`AgentGroup name "${input.name}" already exists`);
+      }
+      throw e;
+    }
+  }
+
+  /** Delete a group (cascades to items & assignments via FK onDelete: Cascade). */
+  async deleteAgentGroup(id: string): Promise<void> {
+    try {
+      await this.prisma.agentGroup.delete({ where: { id } });
+    } catch (e: any) {
+      if (e?.code === 'P2025') {
+        throw new NotFoundException(`AgentGroup "${id}" not found`);
+      }
+      throw e;
+    }
+  }
+
+  /** List groups with basic filters + pagination. */
+  async listAgentGroups(params: ListGroupsParams = {}): Promise<Paginated<AgentGroup>> {
+    const page = Math.max(1, params.page ?? 1);
+    const limit = Math.min(100, Math.max(1, params.limit ?? 20));
+    const where: Prisma.AgentGroupWhereInput = {
+      ...(params.nameContains
+        ? { name: { contains: params.nameContains, mode: 'insensitive' } }
+        : {}),
+      ...(typeof params.isActive === 'boolean' ? { isActive: params.isActive } : {}),
+    };
+
+    const orderBy: Prisma.AgentGroupOrderByWithRelationInput = {
+      [(params.sortBy ?? 'createdAt')]: params.sortOrder ?? 'desc',
+    };
+
+    const [total, data] = await this.prisma.$transaction([
+      this.prisma.agentGroup.count({ where }),
+      this.prisma.agentGroup.findMany({
+        where,
+        orderBy,
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+    ]);
+
+    return {
+      data,
+      total,
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+    };
+  }
+
+  /** Add agents to a group (deduped, createMany skipDuplicates). */
+  async addAgentsToGroup(groupId: string, agentNames: AgentName[]): Promise<{ count: number }> {
+    // ensure group exists
+    const group = await this.prisma.agentGroup.findUnique({ where: { id: groupId } });
+    if (!group) throw new NotFoundException(`AgentGroup "${groupId}" not found`);
+
+    // dedupe incoming
+    const unique = Array.from(new Set(agentNames));
+    if (unique.length === 0) return { count: 0 };
+
+    const result = await this.prisma.agentGroupItem.createMany({
+      data: unique.map((a) => ({ groupId, agentName: a })),
+      skipDuplicates: true, // relies on @@unique([groupId, agentName])
     });
-    return updated.selectedAgents;
+
+    return { count: result.count };
   }
 
-  /** Remove one or more agents (by Email) */
-  async removeAgentsByEmail(
-    email: string,
-    agentsToRemove: (AgentName | string)[],
-  ): Promise<AgentName[]> {
-    const remove = new Set(this.validateAndNormalize(agentsToRemove));
-    const current = await this.getSelectedAgentsByEmail(email);
-    const set = current.filter((a) => !remove.has(a));
+  /** Remove specific agents from a group. */
+  async removeAgentsFromGroup(
+    groupId: string,
+    agentNames: AgentName[],
+  ): Promise<{ count: number }> {
+    // ensure group exists
+    const group = await this.prisma.agentGroup.findUnique({ where: { id: groupId } });
+    if (!group) throw new NotFoundException(`AgentGroup "${groupId}" not found`);
 
-    const u = await this.resolveUser({ email }, { id: true });
-    const updated = await this.prisma.user.update({
-      where: { id: u.id },
-      data: { selectedAgents: { set } },
-      select: { selectedAgents: true },
+    if (!agentNames.length) return { count: 0 };
+
+    const result = await this.prisma.agentGroupItem.deleteMany({
+      where: { groupId, agentName: { in: agentNames } },
     });
-    return updated.selectedAgents;
+
+    return { count: result.count };
   }
-
-  /** Toggle a single agent (by Email) */
-  async toggleAgentByEmail(email: string, agent: AgentName | string): Promise<AgentName[]> {
-    const [normalized] = this.validateAndNormalize([agent]);
-    const current = await this.getSelectedAgentsByEmail(email);
-    const exists = current.includes(normalized);
-    const set = exists ? current.filter((a) => a !== normalized) : this.dedupe([...current, normalized]);
-
-    const u = await this.resolveUser({ email }, { id: true });
-    const updated = await this.prisma.user.update({
-      where: { id: u.id },
-      data: { selectedAgents: { set } },
-      select: { selectedAgents: true },
-    });
-    return updated.selectedAgents;
-  }
-
-  /** Clear all (by Email) */
-  async clearAgentsByEmail(email: string): Promise<AgentName[]> {
-    const u = await this.resolveUser({ email }, { id: true });
-    const updated = await this.prisma.user.update({
-      where: { id: u.id },
-      data: { selectedAgents: { set: [] } },
-      select: { selectedAgents: true },
-    });
-    return updated.selectedAgents;
-  }
-
-  // ----------------- helpers -----------------
 
   /**
-   * Resolve user by selector with a properly typed Prisma `select`.
-   * This fixes the TS error by constraining `S` to `Prisma.UserSelect`
-   * and returning `Prisma.UserGetPayload<{ select: S }>` accordingly.
+   * Replace a group's agents with the provided set (transactional).
+   * Passing an empty array clears the group.
    */
-  private async resolveUser<S extends Prisma.UserSelect>(
-    selector: UserSelector,
-    select: S,
-  ): Promise<Prisma.UserGetPayload<{ select: S }>> {
-    const where = 'id' in selector ? { id: selector.id } : { email: selector.email };
-    const user = await this.prisma.user.findUnique({ where, select });
-    if (!user) throw new NotFoundException('User not found');
-    return user as Prisma.UserGetPayload<{ select: S }>;
-  }
+  async replaceGroupAgents(groupId: string, agentNames: AgentName[]): Promise<void> {
+    // ensure group exists
+    const group = await this.prisma.agentGroup.findUnique({ where: { id: groupId } });
+    if (!group) throw new NotFoundException(`AgentGroup "${groupId}" not found`);
 
-  /** Validate strings against AgentName enum and return a deduped list */
-  private validateAndNormalize(values: (AgentName | string)[]): AgentName[] {
-    if (!Array.isArray(values)) {
-      throw new BadRequestException('agents must be an array');
-    }
-    const valid = new Set<AgentName>(Object.values(AgentName));
-    const out: AgentName[] = [];
-    for (const v of values) {
-      const upper = String(v).trim().toUpperCase() as AgentName;
-      if (!valid.has(upper)) {
-        throw new BadRequestException(
-          `Invalid agent name: "${v}". Allowed: ${Array.from(valid).join(', ')}`,
-        );
+    const next = Array.from(new Set(agentNames)); // dedupe
+
+    await this.prisma.$transaction(async (tx) => {
+      // delete all not in next
+      await tx.agentGroupItem.deleteMany({
+        where: {
+          groupId,
+          ...(next.length ? { agentName: { notIn: next } } : {}),
+        },
+      });
+
+      if (next.length) {
+        // create missing
+        await tx.agentGroupItem.createMany({
+          data: next.map((a) => ({ groupId, agentName: a })),
+          skipDuplicates: true,
+        });
       }
-      out.push(upper);
-    }
-    return this.dedupe(out);
+    });
   }
 
-  private dedupe(arr: AgentName[]): AgentName[] {
+  /* --------------------------- GROUP-BASED ASSIGN -------------------------- */
+
+  /** Resolve a group by id or unique name and return its id. */
+  private async resolveGroupId(sel: GroupSelector): Promise<string> {
+    if (sel.groupId) {
+      const g = await this.prisma.agentGroup.findUnique({ where: { id: sel.groupId } });
+      if (!g) throw new NotFoundException(`AgentGroup with id "${sel.groupId}" not found`);
+      return g.id;
+    }
+    if (sel.groupName) {
+      const g = await this.prisma.agentGroup.findUnique({ where: { name: sel.groupName } });
+      if (!g) throw new NotFoundException(`AgentGroup with name "${sel.groupName}" not found`);
+      return g.id;
+    }
+    throw new BadRequestException('Provide groupId or groupName');
+  }
+
+  /** Fetch AgentName[] members of a group (ordered, deduped). */
+  private async getGroupAgentNames(groupId: string): Promise<AgentName[]> {
+    const items = await this.prisma.agentGroupItem.findMany({
+      where: { groupId },
+      select: { agentName: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (items.length === 0) {
+      throw new BadRequestException(`AgentGroup "${groupId}" has no agents`);
+    }
     const seen = new Set<AgentName>();
-    const result: AgentName[] = [];
-    for (const a of arr) {
-      if (!seen.has(a)) {
-        seen.add(a);
-        result.push(a);
+    const out: AgentName[] = [];
+    for (const i of items) {
+      if (!seen.has(i.agentName)) {
+        seen.add(i.agentName);
+        out.push(i.agentName);
       }
     }
-    return result;
+    return out;
+  }
+
+  /**
+   * Assign ALL agents of a given group (by id or name) to a user by email.
+   * NOW ALSO UPSERTS an AssignedGroup row for that (user, group).
+   * Response stays the same (AssignedAgent[]) for backward compatibility.
+   */
+  async assignAgentGroupByEmail(
+    email: string,
+    selector: GroupSelector,
+    opts: BaseAssignOpts = {},
+  ): Promise<AssignedAgent[]> {
+    if (!email?.trim()) throw new BadRequestException('email is required');
+
+    const user = await this.getUserByEmail(email.trim());
+    const groupId = await this.resolveGroupId(selector);
+    const agentNames = await this.getGroupAgentNames(groupId);
+
+    const { startsAt, expiresAt } = this.computeExpiry(
+      opts.startsAt,
+      opts.expiresAt,
+      opts.durationDays ?? undefined,
+    );
+
+    // Ensure an AssignedGroup exists/updates for this user+group
+    await this.upsertActiveGroupAssignment({
+      userId: user.id,
+      groupId,
+      startsAt,
+      expiresAt,
+      durationDays: opts.durationDays ?? null,
+      isActive: opts.isActive,
+    });
+
+    // Materialize per-agent assignments (legacy behavior)
+    return this.prisma.$transaction(async (tx) => {
+      const results: AssignedAgent[] = [];
+      for (const agentName of agentNames) {
+        const existingActive = await tx.assignedAgent.findFirst({
+          where: { userId: user.id, agentName, isActive: true },
+        });
+
+        if (existingActive) {
+          const updated = await tx.assignedAgent.update({
+            where: { id: existingActive.id },
+            data: {
+              startsAt: startsAt ?? existingActive.startsAt,
+              ...(expiresAt !== undefined ? { expiresAt } : {}),
+              durationDays: opts.durationDays ?? existingActive.durationDays,
+              ...(typeof opts.isActive === 'boolean' ? { isActive: opts.isActive } : {}),
+            },
+          });
+          results.push(updated);
+        } else {
+          const created = await tx.assignedAgent.create({
+            data: {
+              userId: user.id,
+              agentName,
+              startsAt: startsAt ?? undefined,
+              expiresAt: expiresAt ?? undefined,
+              durationDays: opts.durationDays ?? undefined,
+              isActive: typeof opts.isActive === 'boolean' ? opts.isActive : true,
+            },
+          });
+          results.push(created);
+        }
+      }
+      return results;
+    });
+  }
+
+  /**
+   * Assign ALL agents from MULTIPLE groups (by id or name) to a user by email.
+   * Groups are merged and deduplicated before assigning.
+   * NOW ALSO UPSERTS an AssignedGroup row for EACH provided group.
+   * Response remains the list of AssignedAgent rows.
+   */
+  async assignAgentGroupsByEmail(
+    email: string,
+    selectors: GroupSelector[],
+    opts: BaseAssignOpts = {},
+  ): Promise<AssignedAgent[]> {
+    if (!email?.trim()) throw new BadRequestException('email is required');
+    if (!Array.isArray(selectors) || selectors.length === 0) {
+      throw new BadRequestException('selectors must be a non-empty array of group identifiers');
+    }
+    const user = await this.getUserByEmail(email.trim());
+
+    const { startsAt, expiresAt } = this.computeExpiry(
+      opts.startsAt,
+      opts.expiresAt,
+      opts.durationDays ?? undefined,
+    );
+
+    const merged = new Set<AgentName>();
+    for (const sel of selectors) {
+      const groupId = await this.resolveGroupId(sel);
+
+      // upsert AssignedGroup for each group in the request
+      await this.upsertActiveGroupAssignment({
+        userId: user.id,
+        groupId,
+        startsAt,
+        expiresAt,
+        durationDays: opts.durationDays ?? null,
+        isActive: opts.isActive,
+      });
+
+      const names = await this.getGroupAgentNames(groupId);
+      names.forEach((n) => merged.add(n));
+    }
+
+    const agentNames = Array.from(merged);
+    if (agentNames.length === 0) {
+      throw new BadRequestException('No agents found in the provided groups');
+    }
+
+    // reuse existing logic to keep behavior consistent
+    return this.assignAgentsByEmail(email, agentNames, opts);
+  }
+
+  /* ===================== create group with agents (+ optional assign) ===================== */
+
+  async createAgentGroupWithAgents(input: {
+    name: string;
+    description?: string;
+    isActive?: boolean;
+    agentNames: AgentName[];
+  }): Promise<{ group: AgentGroup; itemsCount: number }> {
+    if (!input?.name?.trim()) {
+      throw new BadRequestException('name is required');
+    }
+    if (!Array.isArray(input.agentNames) || input.agentNames.length === 0) {
+      throw new BadRequestException('agentNames must be a non-empty array');
+    }
+
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const group = await tx.agentGroup.create({
+          data: {
+            name: input.name.trim(),
+            description: input.description,
+            isActive: input.isActive ?? true,
+          },
+        });
+
+        const unique = Array.from(new Set(input.agentNames));
+        const res = await tx.agentGroupItem.createMany({
+          data: unique.map((a) => ({ groupId: group.id, agentName: a })),
+          skipDuplicates: true,
+        });
+
+        return { group, itemsCount: res.count };
+      });
+    } catch (e: any) {
+      if (e?.code === 'P2002') {
+        throw new ConflictException(`AgentGroup name "${input.name}" already exists`);
+      }
+      throw e;
+    }
+  }
+
+  async createGroupWithAgentsAndAssignByEmail(
+    email: string,
+    groupInput: {
+      name: string;
+      description?: string;
+      isActive?: boolean;
+      agentNames: AgentName[];
+    },
+    opts: BaseAssignOpts = {},
+  ): Promise<{ group: AgentGroup; assignments: AssignedAgent[] }> {
+    if (!email?.trim()) throw new BadRequestException('email is required');
+
+    const { group } = await this.createAgentGroupWithAgents(groupInput);
+
+    // Ensure AssignedGroup row exists too
+    const { startsAt, expiresAt } = this.computeExpiry(
+      opts.startsAt,
+      opts.expiresAt,
+      opts.durationDays ?? undefined,
+    );
+    const user = await this.getUserByEmail(email.trim());
+    await this.upsertActiveGroupAssignment({
+      userId: user.id,
+      groupId: group.id,
+      startsAt,
+      expiresAt,
+      durationDays: opts.durationDays ?? null,
+      isActive: opts.isActive,
+    });
+
+    // then assign that group's agents materialized
+    const assignments = await this.assignAgentGroupByEmail(
+      email.trim(),
+      { groupId: group.id },
+      opts,
+    );
+
+    return { group, assignments };
+  }
+
+  /* ===================== GROUP ASSIGNMENT (explicit API) ===================== */
+
+  async assignGroupToUserByEmail(
+    email: string,
+    selector: GroupSelector,
+    opts: BaseAssignOpts = {},
+    alsoAssignAgents = true,
+  ): Promise<{ groupAssignment: AssignedGroup; agentAssignments?: AssignedAgent[] }> {
+    if (!email?.trim()) throw new BadRequestException('email is required');
+    const user = await this.getUserByEmail(email.trim());
+
+    const groupId = await this.resolveGroupId(selector);
+    const { startsAt, expiresAt } = this.computeExpiry(
+      opts.startsAt,
+      opts.expiresAt,
+      opts.durationDays ?? undefined,
+    );
+
+    const groupAssignment = await this.upsertActiveGroupAssignment({
+      userId: user.id,
+      groupId,
+      startsAt,
+      expiresAt,
+      durationDays: opts.durationDays ?? null,
+      isActive: opts.isActive,
+    });
+
+    if (!alsoAssignAgents) return { groupAssignment };
+
+    const agentNames = await this.getGroupAgentNames(groupId);
+    const agentAssignments = await this.assignAgentsByEmail(email.trim(), agentNames, opts);
+
+    return { groupAssignment, agentAssignments };
+  }
+
+  async listGroupAssignmentsByEmail(
+    email: string,
+    activeOnly = false,
+  ): Promise<AssignedGroup[]> {
+    const user = await this.getUserByEmail(email.trim());
+    return this.prisma.assignedGroup.findMany({
+      where: { userId: user.id, ...(activeOnly ? { isActive: true } : {}) },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async deactivateGroupByEmail(
+    email: string,
+    selector: GroupSelector,
+  ): Promise<AssignedGroup> {
+    const user = await this.getUserByEmail(email.trim());
+    const groupId = await this.resolveGroupId(selector);
+    const existing = await this.prisma.assignedGroup.findFirst({
+      where: { userId: user.id, groupId, isActive: true },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Active group assignment not found for ${email}`);
+    }
+    return this.prisma.assignedGroup.update({
+      where: { id: existing.id },
+      data: { isActive: false },
+    });
+  }
+
+  /** User self-service: update their own GROUP assignment */
+  async updateMyGroupAssignmentByEmail(
+    email: string,
+    selector: GroupSelector,
+    updates: {
+      startsAt?: Date | string;
+      expiresAt?: Date | string | null;
+      durationDays?: number | null;
+      isActive?: boolean;
+    },
+  ): Promise<AssignedGroup> {
+    if (!email?.trim()) throw new BadRequestException('email is required');
+    const user = await this.getUserByEmail(email.trim());
+    const groupId = await this.resolveGroupId(selector);
+
+    const existing = await this.prisma.assignedGroup.findFirst({
+      where: { userId: user.id, groupId },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!existing) {
+      throw new NotFoundException('Group assignment not found');
+    }
+
+    const { startsAt, expiresAt } = this.computeExpiry(
+      updates.startsAt,
+      updates.expiresAt,
+      updates.durationDays ?? undefined,
+    );
+
+    return this.prisma.assignedGroup.update({
+      where: { id: existing.id },
+      data: {
+        ...(startsAt !== undefined ? { startsAt } : {}),
+        ...(expiresAt !== undefined ? { expiresAt } : {}),
+        ...(updates.durationDays !== undefined ? { durationDays: updates.durationDays } : {}),
+        ...(typeof updates.isActive === 'boolean' ? { isActive: updates.isActive } : {}),
+      },
+    });
+  }
+
+  /** User self-service: extend (or reduce) their GROUP assignment expiry by N days. */
+  async extendMyGroupAssignmentByEmail(
+    email: string,
+    selector: GroupSelector,
+    addDays: number,
+  ): Promise<AssignedGroup> {
+    if (!Number.isInteger(addDays) || Math.abs(addDays) > 3650) {
+      throw new BadRequestException('addDays must be an integer within ±3650');
+    }
+    const user = await this.getUserByEmail(email.trim());
+    const groupId = await this.resolveGroupId(selector);
+    const existing = await this.prisma.assignedGroup.findFirst({
+      where: { userId: user.id, groupId },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!existing) {
+      throw new NotFoundException('Group assignment not found');
+    }
+
+    const base = existing.expiresAt ?? new Date();
+    const next = new Date(base);
+    next.setDate(next.getDate() + addDays);
+
+    return this.prisma.assignedGroup.update({
+      where: { id: existing.id },
+      data: { expiresAt: next },
+    });
+  }
+
+  /** User self-service: deactivate (opt-out) their GROUP assignment. */
+  async deactivateMyGroupAssignmentByEmail(
+    email: string,
+    selector: GroupSelector,
+  ): Promise<AssignedGroup> {
+    const user = await this.getUserByEmail(email.trim());
+    const groupId = await this.resolveGroupId(selector);
+    const existing = await this.prisma.assignedGroup.findFirst({
+      where: { userId: user.id, groupId, isActive: true },
+    });
+    if (!existing) {
+      throw new NotFoundException('Active group assignment not found');
+    }
+    return this.prisma.assignedGroup.update({
+      where: { id: existing.id },
+      data: { isActive: false },
+    });
   }
 }
