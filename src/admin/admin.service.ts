@@ -5,15 +5,9 @@ import {
   NotFoundException,
   ConflictException,
 } from '@nestjs/common';
+import { AgentGroup, AgentName, AssignedAgent, AssignedGroup, Prisma, User } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
-import {
-  AgentName,
-  AssignedAgent,
-  AssignedGroup,
-  AgentGroup,
-  Prisma,
-  User,
-} from '@prisma/client';
+
 
 /* ============================================
  * Types
