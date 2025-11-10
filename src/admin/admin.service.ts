@@ -751,9 +751,21 @@ async listGroupAgents(groupId: string) {
   ): Promise<AssignedGroup[]> {
     const user = await this.getUserByEmail(email.trim());
     return this.prisma.assignedGroup.findMany({
-      where: { userId: user.id, ...(activeOnly ? { isActive: true } : {}) },
-      orderBy: { createdAt: 'desc' },
-    });
+  where: { userId: user.id, ...(activeOnly ? { isActive: true } : {}) },
+  orderBy: { createdAt: 'desc' },
+  select: {
+    id: true,
+    userId: true,
+    groupId: true,
+    startsAt: true,
+    expiresAt: true,
+    durationDays: true,
+    isActive: true,
+    createdAt: true,
+    updatedAt: true,
+    group: { select: { id: true, name: true } },   // <-- only id + name
+  },
+});
   }
 
   async deactivateGroupByEmail(
