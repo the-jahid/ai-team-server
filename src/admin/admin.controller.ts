@@ -684,11 +684,10 @@ export class AdminController {
     return this.admin.listGroupAgents(p.id);
   }
 
-    /** GET /users/emails -> string[] (all user emails) */
-  @Get('emails')
-  async listAllEmails(): Promise<string[]> {
-    return this.admin.listAllEmails();
-  }
+@Get('emails')
+async listAllEmails(): Promise<{ email: string; name: string | null }[]> {
+  return this.admin.listAllEmails();
+}
 
   /** User: deactivate (opt-out) their GROUP assignment */
   @Post('my/group-assignment/deactivate')

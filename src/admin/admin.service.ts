@@ -876,11 +876,15 @@ async listGroupAgents(groupId: string) {
 
   
   /** Return all user emails as a flat string[] */
-  async listAllEmails(): Promise<string[]> {
-    const rows = await this.prisma.user.findMany({
-      select: { email: true },
-      orderBy: { createdAt: 'desc' }, // optional
-    });
-    return rows.map((r) => r.email);
-  }
+async listAllEmails(): Promise<{ email: string; name: string | null }[]> {
+  const rows = await this.prisma.user.findMany({
+    select: { email: true, username: true }, // keep schema-safe
+    orderBy: { createdAt: 'desc' },
+  });
+
+  return rows.map((r) => ({
+    email: r.email,
+    name: r.username ?? null, // fallback if you don't have a name column
+  }));
+}
 }
