@@ -1,20 +1,17 @@
 // src/admin/interface/admin.interface.ts
 
-/** Mirror of Prisma enum AgentName */
+/** Mirror of Prisma enum AgentName (10 values) */
 export enum AgentName {
   JIM = "JIM",
   ALEX = "ALEX",
   MIKE = "MIKE",
   TONY = "TONY",
   LARA = "LARA",
-  LEIZ = "LEIZ",
   VALENTINA = "VALENTINA",
   DANIELE = "DANIELE",
   SIMONE = "SIMONE",
-  WONDER = "WONDER",
   NIKO = "NIKO",
-  LEO = "LEO",
-  LAURA = "LAURA",
+  ALADINO = "ALADINO",
 }
 
 /** Utility: allow Date or ISO string */
@@ -108,15 +105,15 @@ export interface CreateAssignedAgentPayload {
   userId: string;
   agentName: AgentName;
   startsAt?: Dateish;
-  expiresAt?: Dateish;
+  expiresAt?: Dateish;              // use null in Update to clear
   durationDays?: number;
-  isActive?: boolean; // defaults to true in DB
+  isActive?: boolean;               // defaults to true in DB
 }
 
 export interface UpdateAssignedAgentPayload {
   id: string;
   startsAt?: Dateish;
-  expiresAt?: Dateish | null; // null to clear
+  expiresAt?: Dateish | null;       // null to clear
   durationDays?: number | null;
   isActive?: boolean;
 }

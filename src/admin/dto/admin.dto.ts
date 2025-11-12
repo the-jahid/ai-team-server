@@ -61,6 +61,7 @@ export class FindUserDto {
   email?: string;
 
   @IsOptional()
+  @IsString()
   oauthId?: string;
 }
 
@@ -158,6 +159,7 @@ export class QueryAssignmentsDto {
   userId?: string;
 
   @IsOptional()
+  @IsString()
   userEmail?: string;
 
   @IsOptional()

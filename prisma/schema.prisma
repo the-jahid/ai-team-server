@@ -15,15 +15,13 @@ enum AgentName {
   MIKE
   TONY
   LARA
-  LEIZ
   VALENTINA
   DANIELE
   SIMONE
-  WONDER
   NIKO
-  LEO
-  LAURA
+  ALADINO
 }
+
 
 model User {
   id        String   @id @default(uuid())
