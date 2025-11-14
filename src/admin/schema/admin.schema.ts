@@ -1,7 +1,7 @@
 // src/admin/schema/admin.schema.ts
 import { z } from "zod";
 
-/** ===== Prisma enum mirror (10 agenti) ===== */
+/** ===== Prisma enum mirror (13 agenti, incl. test) ===== */
 export const AgentNameEnum = z.enum([
   "JIM",
   "ALEX",
@@ -13,6 +13,9 @@ export const AgentNameEnum = z.enum([
   "SIMONE",
   "NIKO",
   "ALADINO",
+  "TEST_MIKE",
+  "TEST_ALEX",
+  "TEST_TONY",
 ]);
 
 /** ===== Helpers ===== */
@@ -56,16 +59,16 @@ const BoolFromQuery = z.preprocess((v) => {
 export const CreateAssignedAgentSchema = z.object({
   userId: UUID,
   agentName: AgentNameEnum,
-  startsAt: CoercedDate.optional(),               // DB defaults now()
-  expiresAt: CoercedDate.optional(),              // OR use durationDays
+  startsAt: CoercedDate.optional(), // DB defaults now()
+  expiresAt: CoercedDate.optional(), // OR use durationDays
   durationDays: CoercedPositiveInt.optional(),
-  isActive: Bool.optional(),                      // DB defaults true
+  isActive: Bool.optional(), // DB defaults true
 });
 
 export const UpdateAssignedAgentSchema = z.object({
   id: UUID,
   startsAt: CoercedDate.optional(),
-  expiresAt: CoercedDateOrNull.optional(),        // allow clearing with null
+  expiresAt: CoercedDateOrNull.optional(), // allow clearing with null
   durationDays: z
     .preprocess((v) => (v === null ? undefined : v), CoercedPositiveInt)
     .nullable()
@@ -116,9 +119,7 @@ export const QueryAssignmentsSchema = z
     activeOnly: Bool.optional(),
     expiredOnly: Bool.optional(),
 
-    sortBy: z
-      .enum(["createdAt", "updatedAt", "startsAt", "expiresAt", "agentName"])
-      .default("createdAt"),
+    sortBy: z.enum(["createdAt", "updatedAt", "startsAt", "expiresAt", "agentName"]).default("createdAt"),
     sortOrder: z.enum(["asc", "desc"]).default("desc"),
   })
   .refine((o) => !(o.activeOnly && o.expiredOnly), {

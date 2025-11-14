@@ -20,8 +20,12 @@ enum AgentName {
   SIMONE
   NIKO
   ALADINO
-}
 
+  // --- test agents ---
+  TEST_MIKE
+  TEST_ALEX
+  TEST_TONY
+}
 
 model User {
   id        String   @id @default(uuid())
@@ -43,10 +47,8 @@ model AssignedAgent {
   agentName AgentName
 
   // When access starts (defaults now) and when it expires
-  startsAt  DateTime  @default(now())
-  expiresAt DateTime?
-
-  // Optional helper: store the granted duration in days (custom)
+  startsAt    DateTime  @default(now())
+  expiresAt   DateTime?
   durationDays Int?
 
   // Only one active assignment per (user, agent)
@@ -62,22 +64,13 @@ model AssignedAgent {
   @@index([expiresAt])
 }
 
-/**
- * =========================
- * Agent Groups (admin-defined)
- * =========================
- */
-
 model AgentGroup {
   id          String  @id @default(uuid())
   name        String  @unique
   description String?
   isActive    Boolean @default(true)
 
-  // members
-  items AgentGroupItem[]
-
-  // assignments (users who have this group)
+  items       AgentGroupItem[]
   assignments AssignedGroup[]
 
   createdAt DateTime @default(now())
@@ -100,25 +93,15 @@ model AgentGroupItem {
   @@index([groupId])
 }
 
-/**
- * =========================
- * Group assignments to users
- * =========================
- */
-
 model AssignedGroup {
   id      String @id @default(uuid())
   userId  String
   groupId String
 
-  // When access starts (defaults now) and when it expires
-  startsAt  DateTime  @default(now())
-  expiresAt DateTime?
-
-  // Optional helper: store the granted duration in days (custom)
+  startsAt    DateTime  @default(now())
+  expiresAt   DateTime?
   durationDays Int?
 
-  // Only one active assignment per (user, group)
   isActive Boolean @default(true)
 
   createdAt DateTime @default(now())
