@@ -1,6 +1,6 @@
 // src/admin/interface/admin.interface.ts
 
-/** Mirror of Prisma enum AgentName (13 values, incl. test agents) */
+/** Mirror of Prisma enum AgentName (20 values, incl. test agents) */
 export enum AgentName {
   JIM = "JIM",
   ALEX = "ALEX",
@@ -12,9 +12,18 @@ export enum AgentName {
   SIMONE = "SIMONE",
   NIKO = "NIKO",
   ALADINO = "ALADINO",
-  TEST_MIKE = "TEST_MIKE",
+
+  // --- test agents ---
+  TEST_JIM = "TEST_JIM",
   TEST_ALEX = "TEST_ALEX",
+  TEST_MIKE = "TEST_MIKE",
   TEST_TONY = "TEST_TONY",
+  TEST_LARA = "TEST_LARA",
+  TEST_VALENTINA = "TEST_VALENTINA",
+  TEST_DANIELE = "TEST_DANIELE",
+  TEST_SIMONE = "TEST_SIMONE",
+  TEST_NIKO = "TEST_NIKO",
+  TEST_ALADINO = "TEST_ALADINO",
 }
 
 /** Utility: allow Date or ISO string */

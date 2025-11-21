@@ -1,7 +1,7 @@
 // src/admin/schema/admin.schema.ts
 import { z } from "zod";
 
-/** ===== Prisma enum mirror (13 agenti, incl. test) ===== */
+/** ===== Prisma enum mirror (20 agenti, incl. test) ===== */
 export const AgentNameEnum = z.enum([
   "JIM",
   "ALEX",
@@ -13,9 +13,18 @@ export const AgentNameEnum = z.enum([
   "SIMONE",
   "NIKO",
   "ALADINO",
-  "TEST_MIKE",
+
+  // --- test agents ---
+  "TEST_JIM",
   "TEST_ALEX",
+  "TEST_MIKE",
   "TEST_TONY",
+  "TEST_LARA",
+  "TEST_VALENTINA",
+  "TEST_DANIELE",
+  "TEST_SIMONE",
+  "TEST_NIKO",
+  "TEST_ALADINO",
 ]);
 
 /** ===== Helpers ===== */

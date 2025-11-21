@@ -22,9 +22,16 @@ enum AgentName {
   ALADINO
 
   // --- test agents ---
-  TEST_MIKE
+  TEST_JIM
   TEST_ALEX
+  TEST_MIKE
   TEST_TONY
+  TEST_LARA
+  TEST_VALENTINA
+  TEST_DANIELE
+  TEST_SIMONE
+  TEST_NIKO
+  TEST_ALADINO
 }
 
 model User {
@@ -47,8 +54,8 @@ model AssignedAgent {
   agentName AgentName
 
   // When access starts (defaults now) and when it expires
-  startsAt    DateTime  @default(now())
-  expiresAt   DateTime?
+  startsAt     DateTime  @default(now())
+  expiresAt    DateTime?
   durationDays Int?
 
   // Only one active assignment per (user, agent)
@@ -98,8 +105,8 @@ model AssignedGroup {
   userId  String
   groupId String
 
-  startsAt    DateTime  @default(now())
-  expiresAt   DateTime?
+  startsAt     DateTime  @default(now())
+  expiresAt    DateTime?
   durationDays Int?
 
   isActive Boolean @default(true)

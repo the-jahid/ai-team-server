@@ -17,7 +17,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
-import { AgentName } from '../interface/admin.interface';
+import { AgentName } from '@prisma/client';
 
 /** ---------- Helpers ---------- */
 const toNumber = ({ value }: { value: any }) => {
@@ -25,6 +25,7 @@ const toNumber = ({ value }: { value: any }) => {
   const n = typeof value === 'string' ? Number(value) : value;
   return Number.isNaN(n) ? undefined : n;
 };
+
 const toDate = ({ value }: { value: any }) =>
   value === '' || value === undefined || value === null ? undefined : new Date(value);
 
