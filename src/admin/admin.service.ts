@@ -4,6 +4,7 @@ import {
   BadRequestException,
   NotFoundException,
   ConflictException,
+  Logger,
 } from '@nestjs/common';
 import {
   Prisma,
@@ -14,6 +15,7 @@ import {
   AgentName,
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { Cron, CronExpression } from '@nestjs/schedule';
 
 /* ============================================
  * Types
@@ -57,6 +59,8 @@ type ListGroupsParams = {
 
 @Injectable()
 export class AdminService {
+  private readonly logger = new Logger(AdminService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   /* ------------------------------- helpers ------------------------------- */
@@ -76,6 +80,7 @@ export class AdminService {
     const s = this.coerceDate(startsAt) ?? undefined;
     const e = this.coerceDate(expiresAt);
     if (e !== undefined) {
+      // caller explicitly set expiresAt (could be null to clear)
       return { startsAt: s, expiresAt: e };
     }
     if (durationDays && durationDays > 0) {
@@ -116,7 +121,7 @@ export class AdminService {
           startsAt: startsAt ?? existingActive.startsAt,
           // if expiresAt is undefined keep current; if null, clear; if Date set new
           ...(expiresAt !== undefined ? { expiresAt } : {}),
-          durationDays: durationDays ?? existingActive.durationDays,
+          ...(durationDays !== undefined ? { durationDays } : {}),
           ...(typeof isActive === 'boolean' ? { isActive } : {}),
         },
       });
@@ -126,9 +131,9 @@ export class AdminService {
       data: {
         userId,
         agentName,
-        startsAt: startsAt ?? undefined, // DB default now()
-        expiresAt: expiresAt ?? undefined,
-        durationDays: durationDays ?? undefined,
+        ...(startsAt ? { startsAt } : {}), // DB default now()
+        ...(expiresAt !== undefined ? { expiresAt } : {}),
+        ...(durationDays !== undefined ? { durationDays } : {}),
         isActive: typeof isActive === 'boolean' ? isActive : true,
       },
     });
@@ -155,7 +160,7 @@ export class AdminService {
         data: {
           startsAt: startsAt ?? existingActive.startsAt,
           ...(expiresAt !== undefined ? { expiresAt } : {}),
-          durationDays: durationDays ?? existingActive.durationDays,
+          ...(durationDays !== undefined ? { durationDays } : {}),
           ...(typeof isActive === 'boolean' ? { isActive } : {}),
         },
       });
@@ -165,15 +170,64 @@ export class AdminService {
       data: {
         userId,
         groupId,
-        startsAt: startsAt ?? undefined,
-        expiresAt: expiresAt ?? undefined,
-        durationDays: durationDays ?? undefined,
+        ...(startsAt ? { startsAt } : {}),
+        ...(expiresAt !== undefined ? { expiresAt } : {}),
+        ...(durationDays !== undefined ? { durationDays } : {}),
         isActive: typeof isActive === 'boolean' ? isActive : true,
       },
     });
   }
 
-  /** List all agents contained in a group (simple helper) */
+  /* --------------------- CRON: auto-expire agents & groups --------------------- */
+
+  /**
+   * Runs every minute:
+   *  - Deactivates AssignedAgent which have expiresAt <= now
+   *  - DELETES AssignedGroup which have expiresAt <= now
+   *
+   * So if you assign a group with durationDays (or explicit expiresAt),
+   * once that time is passed, the group assignment row is removed.
+   */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async autoExpireAssignmentsCron() {
+    const now = new Date();
+
+    // 1) AGENT-LEVEL: mark expired as inactive
+    const expiredAgents = await this.prisma.assignedAgent.findMany({
+      where: {
+        isActive: true,
+        expiresAt: { not: null, lte: now },
+      },
+      select: { id: true },
+    });
+
+    if (expiredAgents.length) {
+      await this.prisma.assignedAgent.updateMany({
+        where: { id: { in: expiredAgents.map((a) => a.id) } },
+        data: { isActive: false },
+      });
+      this.logger.debug(`Auto-deactivated ${expiredAgents.length} AssignedAgent records`);
+    }
+
+    // 2) GROUP-LEVEL: delete expired group assignments
+    const expiredGroups = await this.prisma.assignedGroup.findMany({
+      where: {
+        isActive: true,
+        expiresAt: { not: null, lte: now },
+      },
+      select: { id: true },
+    });
+
+    if (expiredGroups.length) {
+      await this.prisma.assignedGroup.deleteMany({
+        where: { id: { in: expiredGroups.map((g) => g.id) } },
+      });
+      this.logger.debug(`Auto-deleted ${expiredGroups.length} AssignedGroup records`);
+    }
+  }
+
+  /* --------------------------- helper: list group agents --------------------------- */
+
   async listGroupAgents(groupId: string) {
     const group = await this.prisma.agentGroup.findUnique({ where: { id: groupId } });
     if (!group) throw new NotFoundException(`AgentGroup "${groupId}" not found`);
@@ -214,7 +268,7 @@ export class AdminService {
       agentName,
       startsAt,
       expiresAt,
-      durationDays: opts.durationDays ?? null,
+      durationDays: opts.durationDays ?? undefined,
       isActive: opts.isActive,
     });
   }
@@ -251,7 +305,9 @@ export class AdminService {
             data: {
               startsAt: startsAt ?? existingActive.startsAt,
               ...(expiresAt !== undefined ? { expiresAt } : {}),
-              durationDays: opts.durationDays ?? existingActive.durationDays,
+              ...(opts.durationDays !== undefined
+                ? { durationDays: opts.durationDays }
+                : {}),
               ...(typeof opts.isActive === 'boolean' ? { isActive: opts.isActive } : {}),
             },
           });
@@ -261,9 +317,11 @@ export class AdminService {
             data: {
               userId: user.id,
               agentName,
-              startsAt: startsAt ?? undefined,
-              expiresAt: expiresAt ?? undefined,
-              durationDays: opts.durationDays ?? undefined,
+              ...(startsAt ? { startsAt } : {}),
+              ...(expiresAt !== undefined ? { expiresAt } : {}),
+              ...(opts.durationDays !== undefined
+                ? { durationDays: opts.durationDays }
+                : {}),
               isActive: typeof opts.isActive === 'boolean' ? opts.isActive : true,
             },
           });
@@ -276,47 +334,35 @@ export class AdminService {
   }
 
   /** Deactivate an active assignment for a user by email. */
-  async deactivateAgentByEmail(
-    email: string,
-    agentName: AgentName,
-  ): Promise<AssignedAgent> {
+  async deactivateAgentByEmail(email: string, agentName: AgentName): Promise<AssignedAgent> {
     const user = await this.getUserByEmail(email.trim());
-
-    return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      const existingActive = await tx.assignedAgent.findFirst({
-        where: { userId: user.id, agentName, isActive: true },
-      });
-
-      if (!existingActive) {
-        throw new NotFoundException(`Active assignment for ${agentName} not found for ${email}`);
-      }
-
-      // Remove any existing inactive record so @@unique([userId, agentName, isActive])
-      // is not violated when we set isActive = false on this row.
-      await tx.assignedAgent.deleteMany({
-        where: {
-          userId: user.id,
-          agentName,
-          isActive: false,
-          NOT: { id: existingActive.id },
-        },
-      });
-
-      return tx.assignedAgent.update({
-        where: { id: existingActive.id },
-        data: { isActive: false },
-      });
+    const existingActive = await this.prisma.assignedAgent.findFirst({
+      where: { userId: user.id, agentName, isActive: true },
+    });
+    if (!existingActive) {
+      throw new NotFoundException(`Active assignment for ${agentName} not found for ${email}`);
+    }
+    return this.prisma.assignedAgent.update({
+      where: { id: existingActive.id },
+      data: { isActive: false },
     });
   }
 
   /** List assignments for a user by email. */
-  async listAssignmentsByEmail(
-    email: string,
-    activeOnly = false,
-  ): Promise<AssignedAgent[]> {
+  async listAssignmentsByEmail(email: string, activeOnly = false): Promise<AssignedAgent[]> {
     const user = await this.getUserByEmail(email.trim());
+    const now = new Date();
+
+    const where: Prisma.AssignedAgentWhereInput = {
+      userId: user.id,
+      ...(activeOnly ? { isActive: true } : {}),
+      ...(activeOnly
+        ? { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] }
+        : {}),
+    };
+
     return this.prisma.assignedAgent.findMany({
-      where: { userId: user.id, ...(activeOnly ? { isActive: true } : {}) },
+      where,
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -389,10 +435,17 @@ export class AdminService {
     }
   }
 
-  /** Delete a group (cascades to items & assignments via FK onDelete: Cascade). */
+  /** Delete a group (plus items & assignments) */
   async deleteAgentGroup(id: string): Promise<void> {
     try {
-      await this.prisma.agentGroup.delete({ where: { id } });
+      await this.prisma.$transaction(async (tx) => {
+        // Remove per-user assignments first
+        await tx.assignedGroup.deleteMany({ where: { groupId: id } });
+        // Remove items
+        await tx.agentGroupItem.deleteMany({ where: { groupId: id } });
+        // Delete group
+        await tx.agentGroup.delete({ where: { id } });
+      });
     } catch (e: any) {
       if (e?.code === 'P2025') {
         throw new NotFoundException(`AgentGroup "${id}" not found`);
@@ -541,8 +594,7 @@ export class AdminService {
 
   /**
    * Assign ALL agents of a given group (by id or name) to a user by email.
-   * NOW ALSO UPSERTS an AssignedGroup row for that (user, group).
-   * Response stays the same (AssignedAgent[]) for backward compatibility.
+   * ALSO UPSERTS an AssignedGroup row for that (user, group).
    */
   async assignAgentGroupByEmail(
     email: string,
@@ -567,52 +619,18 @@ export class AdminService {
       groupId,
       startsAt,
       expiresAt,
-      durationDays: opts.durationDays ?? null,
+      durationDays: opts.durationDays ?? undefined,
       isActive: opts.isActive,
     });
 
-    // Materialize per-agent assignments (legacy behavior)
-    return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      const results: AssignedAgent[] = [];
-      for (const agentName of agentNames) {
-        const existingActive = await tx.assignedAgent.findFirst({
-          where: { userId: user.id, agentName, isActive: true },
-        });
-
-        if (existingActive) {
-          const updated = await tx.assignedAgent.update({
-            where: { id: existingActive.id },
-            data: {
-              startsAt: startsAt ?? existingActive.startsAt,
-              ...(expiresAt !== undefined ? { expiresAt } : {}),
-              durationDays: opts.durationDays ?? existingActive.durationDays,
-              ...(typeof opts.isActive === 'boolean' ? { isActive: opts.isActive } : {}),
-            },
-          });
-          results.push(updated);
-        } else {
-          const created = await tx.assignedAgent.create({
-            data: {
-              userId: user.id,
-              agentName,
-              startsAt: startsAt ?? undefined,
-              expiresAt: expiresAt ?? undefined,
-              durationDays: opts.durationDays ?? undefined,
-              isActive: typeof opts.isActive === 'boolean' ? opts.isActive : true,
-            },
-          });
-          results.push(created);
-        }
-      }
-      return results;
-    });
+    // Materialize per-agent assignments
+    return this.assignAgentsByEmail(email.trim(), agentNames, opts);
   }
 
   /**
    * Assign ALL agents from MULTIPLE groups (by id or name) to a user by email.
    * Groups are merged and deduplicated before assigning.
-   * NOW ALSO UPSERTS an AssignedGroup row for EACH provided group.
-   * Response remains the list of AssignedAgent rows.
+   * ALSO UPSERTS an AssignedGroup row for EACH provided group.
    */
   async assignAgentGroupsByEmail(
     email: string,
@@ -641,7 +659,7 @@ export class AdminService {
         groupId,
         startsAt,
         expiresAt,
-        durationDays: opts.durationDays ?? null,
+        durationDays: opts.durationDays ?? undefined,
         isActive: opts.isActive,
       });
 
@@ -725,7 +743,7 @@ export class AdminService {
       groupId: group.id,
       startsAt,
       expiresAt,
-      durationDays: opts.durationDays ?? null,
+      durationDays: opts.durationDays ?? undefined,
       isActive: opts.isActive,
     });
 
@@ -762,7 +780,7 @@ export class AdminService {
       groupId,
       startsAt,
       expiresAt,
-      durationDays: opts.durationDays ?? null,
+      durationDays: opts.durationDays ?? undefined,
       isActive: opts.isActive,
     });
 
@@ -774,10 +792,27 @@ export class AdminService {
     return { groupAssignment, agentAssignments };
   }
 
-  async listGroupAssignmentsByEmail(email: string, activeOnly = false) {
+  async listGroupAssignmentsByEmail(
+    email: string,
+    activeOnly = false,
+  ): Promise<
+    (AssignedGroup & {
+      group: { id: string; name: string };
+    })[]
+  > {
     const user = await this.getUserByEmail(email.trim());
+    const now = new Date();
+
+    const where: Prisma.AssignedGroupWhereInput = {
+      userId: user.id,
+      ...(activeOnly ? { isActive: true } : {}),
+      ...(activeOnly
+        ? { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] }
+        : {}),
+    };
+
     return this.prisma.assignedGroup.findMany({
-      where: { userId: user.id, ...(activeOnly ? { isActive: true } : {}) },
+      where,
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,
@@ -789,9 +824,9 @@ export class AdminService {
         isActive: true,
         createdAt: true,
         updatedAt: true,
-        group: { select: { id: true, name: true } }, // only id + name
+        group: { select: { id: true, name: true } },
       },
-    });
+    }) as any;
   }
 
   async deactivateGroupByEmail(
@@ -800,31 +835,15 @@ export class AdminService {
   ): Promise<AssignedGroup> {
     const user = await this.getUserByEmail(email.trim());
     const groupId = await this.resolveGroupId(selector);
-
-    return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      const existing = await tx.assignedGroup.findFirst({
-        where: { userId: user.id, groupId, isActive: true },
-      });
-
-      if (!existing) {
-        throw new NotFoundException(`Active group assignment not found for ${email}`);
-      }
-
-      // Remove any existing inactive record so @@unique([userId, groupId, isActive])
-      // is not violated when we set isActive = false on this row.
-      await tx.assignedGroup.deleteMany({
-        where: {
-          userId: user.id,
-          groupId,
-          isActive: false,
-          NOT: { id: existing.id },
-        },
-      });
-
-      return tx.assignedGroup.update({
-        where: { id: existing.id },
-        data: { isActive: false },
-      });
+    const existing = await this.prisma.assignedGroup.findFirst({
+      where: { userId: user.id, groupId, isActive: true },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Active group assignment not found for ${email}`);
+    }
+    return this.prisma.assignedGroup.update({
+      where: { id: existing.id },
+      data: { isActive: false },
     });
   }
 
@@ -843,45 +862,30 @@ export class AdminService {
     const user = await this.getUserByEmail(email.trim());
     const groupId = await this.resolveGroupId(selector);
 
-    return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      const existing = await tx.assignedGroup.findFirst({
-        where: { userId: user.id, groupId },
-        orderBy: { createdAt: 'desc' },
-      });
+    const existing = await this.prisma.assignedGroup.findFirst({
+      where: { userId: user.id, groupId },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!existing) {
+      throw new NotFoundException('Group assignment not found');
+    }
 
-      if (!existing) {
-        throw new NotFoundException('Group assignment not found');
-      }
+    const { startsAt, expiresAt } = this.computeExpiry(
+      updates.startsAt,
+      updates.expiresAt,
+      updates.durationDays ?? undefined,
+    );
 
-      const { startsAt, expiresAt } = this.computeExpiry(
-        updates.startsAt,
-        updates.expiresAt,
-        updates.durationDays ?? undefined,
-      );
-
-      const targetIsActive =
-        typeof updates.isActive === 'boolean' ? updates.isActive : existing.isActive;
-
-      // Ensure we don't break @@unique([userId, groupId, isActive]) when
-      // changing isActive (either true->false or false->true).
-      await tx.assignedGroup.deleteMany({
-        where: {
-          userId: user.id,
-          groupId,
-          isActive: targetIsActive,
-          NOT: { id: existing.id },
-        },
-      });
-
-      return tx.assignedGroup.update({
-        where: { id: existing.id },
-        data: {
-          ...(startsAt !== undefined ? { startsAt } : {}),
-          ...(expiresAt !== undefined ? { expiresAt } : {}),
-          ...(updates.durationDays !== undefined ? { durationDays: updates.durationDays } : {}),
-          isActive: targetIsActive,
-        },
-      });
+    return this.prisma.assignedGroup.update({
+      where: { id: existing.id },
+      data: {
+        ...(startsAt !== undefined ? { startsAt } : {}),
+        ...(expiresAt !== undefined ? { expiresAt } : {}),
+        ...(updates.durationDays !== undefined
+          ? { durationDays: updates.durationDays }
+          : {}),
+        ...(typeof updates.isActive === 'boolean' ? { isActive: updates.isActive } : {}),
+      },
     });
   }
 
@@ -921,42 +925,28 @@ export class AdminService {
   ): Promise<AssignedGroup> {
     const user = await this.getUserByEmail(email.trim());
     const groupId = await this.resolveGroupId(selector);
-
-    return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      const existing = await tx.assignedGroup.findFirst({
-        where: { userId: user.id, groupId, isActive: true },
-      });
-
-      if (!existing) {
-        throw new NotFoundException('Active group assignment not found');
-      }
-
-      await tx.assignedGroup.deleteMany({
-        where: {
-          userId: user.id,
-          groupId,
-          isActive: false,
-          NOT: { id: existing.id },
-        },
-      });
-
-      return tx.assignedGroup.update({
-        where: { id: existing.id },
-        data: { isActive: false },
-      });
+    const existing = await this.prisma.assignedGroup.findFirst({
+      where: { userId: user.id, groupId, isActive: true },
+    });
+    if (!existing) {
+      throw new NotFoundException('Active group assignment not found');
+    }
+    return this.prisma.assignedGroup.update({
+      where: { id: existing.id },
+      data: { isActive: false },
     });
   }
 
   /** Return all user emails as a flat string[] */
   async listAllEmails(): Promise<{ email: string; name: string | null }[]> {
     const rows = await this.prisma.user.findMany({
-      select: { email: true, username: true }, // keep schema-safe
+      select: { email: true, username: true },
       orderBy: { createdAt: 'desc' },
     });
 
     return rows.map((r) => ({
       email: r.email,
-      name: r.username ?? null, // fallback if you don't have a name column
+      name: r.username ?? null,
     }));
   }
 }

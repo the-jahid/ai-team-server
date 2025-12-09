@@ -492,8 +492,8 @@ export class AdminController {
 
   /**
    * Assign all agents from a single group (identified by id or name) to a user by email.
-   * NOTE: Service now also UPSERTS an AssignedGroup for (user, group) automatically.
-   * Response is still AssignedAgent[] for backward compatibility.
+   * Service also UPSERTS an AssignedGroup for (user, group) automatically.
+   * Response is AssignedAgent[] (materialized per-agent assignments).
    */
   @Post('assign/group')
   assignGroup(@Body() dto: AssignGroupByEmailDto) {
@@ -545,7 +545,13 @@ export class AdminController {
     return this.admin.updateAgentGroup(p.id, dto);
   }
 
-  /** Delete a group by id (uses DB cascade via FK) */
+  /**
+   * Delete a group by id.
+   * Service does a transaction:
+   *   - delete AssignedGroup rows for that group
+   *   - delete AgentGroupItem rows
+   *   - delete the AgentGroup itself
+   */
   @Delete('groups/:id')
   deleteGroup(@Param() p: GroupIdParam) {
     return this.admin.deleteAgentGroup(p.id);
@@ -576,7 +582,7 @@ export class AdminController {
   }
 
   /** Get all agents belonging to a specific group */
-  @Get('groups/:id/agents')
+  @Get('groups/:id/agents/list')
   getGroupAgents(@Param() p: GroupIdParam) {
     return this.admin.listGroupAgents(p.id);
   }
