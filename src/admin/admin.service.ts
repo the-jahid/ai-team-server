@@ -5,9 +5,15 @@ import {
   NotFoundException,
   ConflictException,
 } from '@nestjs/common';
-import { Prisma, AssignedAgent, AssignedGroup, AgentGroup, User, AgentName } from '@prisma/client';
+import {
+  Prisma,
+  AssignedAgent,
+  AssignedGroup,
+  AgentGroup,
+  User,
+  AgentName,
+} from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
-
 
 /* ============================================
  * Types
@@ -167,23 +173,24 @@ export class AdminService {
     });
   }
 
-    // src/admin/admin.service.ts
-async listGroupAgents(groupId: string) {
-  const group = await this.prisma.agentGroup.findUnique({ where: { id: groupId } });
-  if (!group) throw new NotFoundException(`AgentGroup "${groupId}" not found`);
+  /** List all agents contained in a group (simple helper) */
+  async listGroupAgents(groupId: string) {
+    const group = await this.prisma.agentGroup.findUnique({ where: { id: groupId } });
+    if (!group) throw new NotFoundException(`AgentGroup "${groupId}" not found`);
 
-  const items = await this.prisma.agentGroupItem.findMany({
-    where: { groupId },
-    select: { agentName: true, createdAt: true, updatedAt: true },
-    orderBy: { createdAt: 'asc' },
-  });
+    const items = await this.prisma.agentGroupItem.findMany({
+      where: { groupId },
+      select: { agentName: true, createdAt: true, updatedAt: true },
+      orderBy: { createdAt: 'asc' },
+    });
 
-  return {
-    group: { id: group.id, name: group.name, isActive: group.isActive },
-    agents: items.map(i => i.agentName),
-    count: items.length,
-  };
-} 
+    return {
+      group: { id: group.id, name: group.name, isActive: group.isActive },
+      agents: items.map((i) => i.agentName),
+      count: items.length,
+    };
+  }
+
   /* --------------------------- public API (email) -------------------------- */
 
   /** Assign a single agent to a user by email. */
@@ -269,22 +276,44 @@ async listGroupAgents(groupId: string) {
   }
 
   /** Deactivate an active assignment for a user by email. */
-  async deactivateAgentByEmail(email: string, agentName: AgentName): Promise<AssignedAgent> {
+  async deactivateAgentByEmail(
+    email: string,
+    agentName: AgentName,
+  ): Promise<AssignedAgent> {
     const user = await this.getUserByEmail(email.trim());
-    const existingActive = await this.prisma.assignedAgent.findFirst({
-      where: { userId: user.id, agentName, isActive: true },
-    });
-    if (!existingActive) {
-      throw new NotFoundException(`Active assignment for ${agentName} not found for ${email}`);
-    }
-    return this.prisma.assignedAgent.update({
-      where: { id: existingActive.id },
-      data: { isActive: false },
+
+    return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      const existingActive = await tx.assignedAgent.findFirst({
+        where: { userId: user.id, agentName, isActive: true },
+      });
+
+      if (!existingActive) {
+        throw new NotFoundException(`Active assignment for ${agentName} not found for ${email}`);
+      }
+
+      // Remove any existing inactive record so @@unique([userId, agentName, isActive])
+      // is not violated when we set isActive = false on this row.
+      await tx.assignedAgent.deleteMany({
+        where: {
+          userId: user.id,
+          agentName,
+          isActive: false,
+          NOT: { id: existingActive.id },
+        },
+      });
+
+      return tx.assignedAgent.update({
+        where: { id: existingActive.id },
+        data: { isActive: false },
+      });
     });
   }
 
   /** List assignments for a user by email. */
-  async listAssignmentsByEmail(email: string, activeOnly = false): Promise<AssignedAgent[]> {
+  async listAssignmentsByEmail(
+    email: string,
+    activeOnly = false,
+  ): Promise<AssignedAgent[]> {
     const user = await this.getUserByEmail(email.trim());
     return this.prisma.assignedAgent.findMany({
       where: { userId: user.id, ...(activeOnly ? { isActive: true } : {}) },
@@ -745,27 +774,24 @@ async listGroupAgents(groupId: string) {
     return { groupAssignment, agentAssignments };
   }
 
-  async listGroupAssignmentsByEmail(
-    email: string,
-    activeOnly = false,
-  ): Promise<AssignedGroup[]> {
+  async listGroupAssignmentsByEmail(email: string, activeOnly = false) {
     const user = await this.getUserByEmail(email.trim());
     return this.prisma.assignedGroup.findMany({
-  where: { userId: user.id, ...(activeOnly ? { isActive: true } : {}) },
-  orderBy: { createdAt: 'desc' },
-  select: {
-    id: true,
-    userId: true,
-    groupId: true,
-    startsAt: true,
-    expiresAt: true,
-    durationDays: true,
-    isActive: true,
-    createdAt: true,
-    updatedAt: true,
-    group: { select: { id: true, name: true } },   // <-- only id + name
-  },
-});
+      where: { userId: user.id, ...(activeOnly ? { isActive: true } : {}) },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        userId: true,
+        groupId: true,
+        startsAt: true,
+        expiresAt: true,
+        durationDays: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+        group: { select: { id: true, name: true } }, // only id + name
+      },
+    });
   }
 
   async deactivateGroupByEmail(
@@ -774,15 +800,31 @@ async listGroupAgents(groupId: string) {
   ): Promise<AssignedGroup> {
     const user = await this.getUserByEmail(email.trim());
     const groupId = await this.resolveGroupId(selector);
-    const existing = await this.prisma.assignedGroup.findFirst({
-      where: { userId: user.id, groupId, isActive: true },
-    });
-    if (!existing) {
-      throw new NotFoundException(`Active group assignment not found for ${email}`);
-    }
-    return this.prisma.assignedGroup.update({
-      where: { id: existing.id },
-      data: { isActive: false },
+
+    return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      const existing = await tx.assignedGroup.findFirst({
+        where: { userId: user.id, groupId, isActive: true },
+      });
+
+      if (!existing) {
+        throw new NotFoundException(`Active group assignment not found for ${email}`);
+      }
+
+      // Remove any existing inactive record so @@unique([userId, groupId, isActive])
+      // is not violated when we set isActive = false on this row.
+      await tx.assignedGroup.deleteMany({
+        where: {
+          userId: user.id,
+          groupId,
+          isActive: false,
+          NOT: { id: existing.id },
+        },
+      });
+
+      return tx.assignedGroup.update({
+        where: { id: existing.id },
+        data: { isActive: false },
+      });
     });
   }
 
@@ -801,28 +843,45 @@ async listGroupAgents(groupId: string) {
     const user = await this.getUserByEmail(email.trim());
     const groupId = await this.resolveGroupId(selector);
 
-    const existing = await this.prisma.assignedGroup.findFirst({
-      where: { userId: user.id, groupId },
-      orderBy: { createdAt: 'desc' },
-    });
-    if (!existing) {
-      throw new NotFoundException('Group assignment not found');
-    }
+    return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      const existing = await tx.assignedGroup.findFirst({
+        where: { userId: user.id, groupId },
+        orderBy: { createdAt: 'desc' },
+      });
 
-    const { startsAt, expiresAt } = this.computeExpiry(
-      updates.startsAt,
-      updates.expiresAt,
-      updates.durationDays ?? undefined,
-    );
+      if (!existing) {
+        throw new NotFoundException('Group assignment not found');
+      }
 
-    return this.prisma.assignedGroup.update({
-      where: { id: existing.id },
-      data: {
-        ...(startsAt !== undefined ? { startsAt } : {}),
-        ...(expiresAt !== undefined ? { expiresAt } : {}),
-        ...(updates.durationDays !== undefined ? { durationDays: updates.durationDays } : {}),
-        ...(typeof updates.isActive === 'boolean' ? { isActive: updates.isActive } : {}),
-      },
+      const { startsAt, expiresAt } = this.computeExpiry(
+        updates.startsAt,
+        updates.expiresAt,
+        updates.durationDays ?? undefined,
+      );
+
+      const targetIsActive =
+        typeof updates.isActive === 'boolean' ? updates.isActive : existing.isActive;
+
+      // Ensure we don't break @@unique([userId, groupId, isActive]) when
+      // changing isActive (either true->false or false->true).
+      await tx.assignedGroup.deleteMany({
+        where: {
+          userId: user.id,
+          groupId,
+          isActive: targetIsActive,
+          NOT: { id: existing.id },
+        },
+      });
+
+      return tx.assignedGroup.update({
+        where: { id: existing.id },
+        data: {
+          ...(startsAt !== undefined ? { startsAt } : {}),
+          ...(expiresAt !== undefined ? { expiresAt } : {}),
+          ...(updates.durationDays !== undefined ? { durationDays: updates.durationDays } : {}),
+          isActive: targetIsActive,
+        },
+      });
     });
   }
 
@@ -862,29 +921,42 @@ async listGroupAgents(groupId: string) {
   ): Promise<AssignedGroup> {
     const user = await this.getUserByEmail(email.trim());
     const groupId = await this.resolveGroupId(selector);
-    const existing = await this.prisma.assignedGroup.findFirst({
-      where: { userId: user.id, groupId, isActive: true },
-    });
-    if (!existing) {
-      throw new NotFoundException('Active group assignment not found');
-    }
-    return this.prisma.assignedGroup.update({
-      where: { id: existing.id },
-      data: { isActive: false },
+
+    return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      const existing = await tx.assignedGroup.findFirst({
+        where: { userId: user.id, groupId, isActive: true },
+      });
+
+      if (!existing) {
+        throw new NotFoundException('Active group assignment not found');
+      }
+
+      await tx.assignedGroup.deleteMany({
+        where: {
+          userId: user.id,
+          groupId,
+          isActive: false,
+          NOT: { id: existing.id },
+        },
+      });
+
+      return tx.assignedGroup.update({
+        where: { id: existing.id },
+        data: { isActive: false },
+      });
     });
   }
 
-  
   /** Return all user emails as a flat string[] */
-async listAllEmails(): Promise<{ email: string; name: string | null }[]> {
-  const rows = await this.prisma.user.findMany({
-    select: { email: true, username: true }, // keep schema-safe
-    orderBy: { createdAt: 'desc' },
-  });
+  async listAllEmails(): Promise<{ email: string; name: string | null }[]> {
+    const rows = await this.prisma.user.findMany({
+      select: { email: true, username: true }, // keep schema-safe
+      orderBy: { createdAt: 'desc' },
+    });
 
-  return rows.map((r) => ({
-    email: r.email,
-    name: r.username ?? null, // fallback if you don't have a name column
-  }));
-}
+    return rows.map((r) => ({
+      email: r.email,
+      name: r.username ?? null, // fallback if you don't have a name column
+    }));
+  }
 }

@@ -545,7 +545,7 @@ export class AdminController {
     return this.admin.updateAgentGroup(p.id, dto);
   }
 
-  /** Delete a group by id (cascades to items & assignments) */
+  /** Delete a group by id (uses DB cascade via FK) */
   @Delete('groups/:id')
   deleteGroup(@Param() p: GroupIdParam) {
     return this.admin.deleteAgentGroup(p.id);
@@ -573,6 +573,12 @@ export class AdminController {
   @Put('groups/:id/agents')
   replaceAgents(@Param() p: GroupIdParam, @Body() dto: AgentsArrayDto) {
     return this.admin.replaceGroupAgents(p.id, dto.agentNames);
+  }
+
+  /** Get all agents belonging to a specific group */
+  @Get('groups/:id/agents')
+  getGroupAgents(@Param() p: GroupIdParam) {
+    return this.admin.listGroupAgents(p.id);
   }
 
   /* ======= CREATE GROUP WITH AGENTS (and optional immediate assign) ======= */
@@ -678,17 +684,7 @@ export class AdminController {
       dto.addDays,
     );
   }
-  // src/admin/admin.controller.ts
-  @Get('groups/:id/agents')
-  getGroupAgents(@Param() p: GroupIdParam) {
-    return this.admin.listGroupAgents(p.id);
-  }
 
-  @Get('emails')
-  async listAllEmails(): Promise<{ email: string; name: string | null }[]> {
-    return this.admin.listAllEmails();
-  }
-  
   /** User: deactivate (opt-out) their GROUP assignment */
   @Post('my/group-assignment/deactivate')
   deactivateMyGroupAssignment(@Body() dto: DeactivateMyGroupAssignmentDto) {
@@ -700,5 +696,11 @@ export class AdminController {
       dto.email,
       selector.groupId ? { groupId: selector.groupId } : { groupName: selector.groupName! },
     );
+  }
+
+  /** List all user emails (for admin UI dropdowns, etc.) */
+  @Get('emails')
+  async listAllEmails(): Promise<{ email: string; name: string | null }[]> {
+    return this.admin.listAllEmails();
   }
 }
