@@ -61,7 +61,7 @@ type ListGroupsParams = {
 export class AdminService {
   private readonly logger = new Logger(AdminService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService) { }
 
   /* ------------------------------- helpers ------------------------------- */
 
@@ -488,6 +488,24 @@ export class AdminService {
     };
   }
 
+  /** Get a single group by ID (with agents count). */
+  async getAgentGroupById(id: string): Promise<AgentGroup & { agentsCount: number; agents: AgentName[] }> {
+    const group = await this.prisma.agentGroup.findUnique({ where: { id } });
+    if (!group) throw new NotFoundException(`AgentGroup "${id}" not found`);
+
+    const items = await this.prisma.agentGroupItem.findMany({
+      where: { groupId: id },
+      select: { agentName: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return {
+      ...group,
+      agentsCount: items.length,
+      agents: items.map((i) => i.agentName),
+    };
+  }
+
   /** Add agents to a group (deduped, createMany skipDuplicates). */
   async addAgentsToGroup(groupId: string, agentNames: AgentName[]): Promise<{ count: number }> {
     // ensure group exists
@@ -552,6 +570,52 @@ export class AdminService {
         });
       }
     });
+  }
+
+  /**
+   * Add agents to a group AND assign those agents to a user by email.
+   * 1. Adds agents to the group (deduped, idempotent)
+   * 2. Assigns those agents to the user
+   * 3. Also upserts an AssignedGroup for (user, group)
+   */
+  async addAgentsToGroupAndAssignByEmail(
+    email: string,
+    selector: GroupSelector,
+    agentNames: AgentName[],
+    opts: BaseAssignOpts = {},
+  ): Promise<{ addedToGroup: { count: number }; assignments: AssignedAgent[] }> {
+    if (!email?.trim()) throw new BadRequestException('email is required');
+    if (!Array.isArray(agentNames) || agentNames.length === 0) {
+      throw new BadRequestException('agentNames must be a non-empty array');
+    }
+
+    const user = await this.getUserByEmail(email.trim());
+    const groupId = await this.resolveGroupId(selector);
+
+    // 1. Add agents to the group (idempotent)
+    const addedToGroup = await this.addAgentsToGroup(groupId, agentNames);
+
+    // 2. Compute expiry options
+    const { startsAt, expiresAt } = this.computeExpiry(
+      opts.startsAt,
+      opts.expiresAt,
+      opts.durationDays ?? undefined,
+    );
+
+    // 3. Upsert AssignedGroup for this user+group
+    await this.upsertActiveGroupAssignment({
+      userId: user.id,
+      groupId,
+      startsAt,
+      expiresAt,
+      durationDays: opts.durationDays ?? undefined,
+      isActive: opts.isActive,
+    });
+
+    // 4. Assign the agents to the user
+    const assignments = await this.assignAgentsByEmail(email.trim(), agentNames, opts);
+
+    return { addedToGroup, assignments };
   }
 
   /* --------------------------- GROUP-BASED ASSIGN -------------------------- */
@@ -797,7 +861,7 @@ export class AdminService {
     activeOnly = false,
   ): Promise<
     (AssignedGroup & {
-      group: { id: string; name: string };
+      group: { id: string; name: string; description: string | null; agents: AgentName[] };
     })[]
   > {
     const user = await this.getUserByEmail(email.trim());
@@ -811,22 +875,31 @@ export class AdminService {
         : {}),
     };
 
-    return this.prisma.assignedGroup.findMany({
+    const assignments = await this.prisma.assignedGroup.findMany({
       where,
       orderBy: { createdAt: 'desc' },
-      select: {
-        id: true,
-        userId: true,
-        groupId: true,
-        startsAt: true,
-        expiresAt: true,
-        durationDays: true,
-        isActive: true,
-        createdAt: true,
-        updatedAt: true,
-        group: { select: { id: true, name: true } },
+      include: {
+        group: {
+          include: {
+            items: {
+              select: { agentName: true },
+              orderBy: { createdAt: 'asc' },
+            },
+          },
+        },
       },
-    }) as any;
+    });
+
+    // Transform to include agents array
+    return assignments.map((a) => ({
+      ...a,
+      group: {
+        id: a.group.id,
+        name: a.group.name,
+        description: a.group.description,
+        agents: a.group.items.map((i) => i.agentName),
+      },
+    })) as any;
   }
 
   async deactivateGroupByEmail(

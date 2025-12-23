@@ -59,86 +59,6 @@ const toBool = ({ value }: { value: any }) => {
 };
 
 /* --------------------------------- DTOs ---------------------------------- */
-/** ---------- Assignment DTOs (single & bulk) ---------- */
-class AssignSingleDto {
-  @IsEmail()
-  email!: string;
-
-  @IsEnum(AgentName)
-  agentName!: AgentName;
-
-  @IsOptional()
-  @Transform(toDate)
-  startsAt?: Date;
-
-  // overrides durationDays if provided; pass null to clear
-  @IsOptional()
-  @ValidateIf((o) => o.expiresAt !== undefined)
-  @Transform(toDateOrNull)
-  expiresAt?: Date | null;
-
-  @IsOptional()
-  @Transform(toNumber)
-  @IsInt()
-  @Min(1)
-  durationDays?: number;
-
-  @IsOptional()
-  @IsBoolean()
-  isActive?: boolean;
-}
-
-class AssignBulkDto {
-  @IsEmail()
-  email!: string;
-
-  @IsArray()
-  @ArrayMinSize(1)
-  @IsEnum(AgentName, { each: true })
-  agentNames!: AgentName[];
-
-  @IsOptional()
-  @Transform(toDate)
-  startsAt?: Date;
-
-  @IsOptional()
-  @ValidateIf((o) => o.expiresAt !== undefined)
-  @Transform(toDateOrNull)
-  expiresAt?: Date | null;
-
-  @IsOptional()
-  @Transform(toNumber)
-  @IsInt()
-  @Min(1)
-  durationDays?: number;
-
-  @IsOptional()
-  @IsBoolean()
-  isActive?: boolean;
-}
-
-class DeactivateDto {
-  @IsEmail()
-  email!: string;
-
-  @IsEnum(AgentName)
-  agentName!: AgentName;
-}
-
-class ListByEmailQuery {
-  @IsEmail()
-  email!: string;
-
-  @IsOptional()
-  @Transform(toBool)
-  @IsBoolean()
-  activeOnly?: boolean;
-}
-
-class SelectedAgentsQuery {
-  @IsEmail()
-  email!: string;
-}
 
 /** ---------- Group selection for assignment ---------- */
 class GroupSelectorDto {
@@ -283,6 +203,40 @@ class AgentsArrayDto {
   @ArrayMinSize(1)
   @IsEnum(AgentName, { each: true })
   agentNames!: AgentName[];
+}
+
+/** Add agents to a group and assign them to a user by email */
+class AddAgentsToGroupAndAssignDto {
+  @IsEmail()
+  email!: string;
+
+  @ValidateNested()
+  @Type(() => GroupSelectorDto)
+  selector!: GroupSelectorDto;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsEnum(AgentName, { each: true })
+  agentNames!: AgentName[];
+
+  @IsOptional()
+  @Transform(toDate)
+  startsAt?: Date;
+
+  @IsOptional()
+  @ValidateIf((o) => o.expiresAt !== undefined)
+  @Transform(toDateOrNull)
+  expiresAt?: Date | null;
+
+  @IsOptional()
+  @Transform(toNumber)
+  @IsInt()
+  @Min(1)
+  durationDays?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
 }
 
 /** ---------- Create group with agents (+ optional assign) ---------- */
@@ -448,47 +402,9 @@ class DeactivateMyGroupAssignmentDto {
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('admin')
 export class AdminController {
-  constructor(private readonly admin: AdminService) {}
+  constructor(private readonly admin: AdminService) { }
 
-  /** Assign a single agent to a user by email (create or update active record) */
-  @Post('assign')
-  assignSingle(@Body() dto: AssignSingleDto) {
-    return this.admin.assignAgentByEmail(dto.email, dto.agentName, {
-      startsAt: dto.startsAt,
-      expiresAt: dto.expiresAt,
-      durationDays: dto.durationDays,
-      isActive: dto.isActive,
-    });
-  }
 
-  /** Assign multiple agents to a user by email (single transaction) */
-  @Post('assign/bulk')
-  assignBulk(@Body() dto: AssignBulkDto) {
-    return this.admin.assignAgentsByEmail(dto.email, dto.agentNames, {
-      startsAt: dto.startsAt,
-      expiresAt: dto.expiresAt,
-      durationDays: dto.durationDays,
-      isActive: dto.isActive,
-    });
-  }
-
-  /** Deactivate an active assignment for a user by email */
-  @Post('deactivate')
-  deactivate(@Body() dto: DeactivateDto) {
-    return this.admin.deactivateAgentByEmail(dto.email, dto.agentName);
-  }
-
-  /** List assignments for a user by email (use ?activeOnly=true to filter) */
-  @Get('assignments')
-  listByEmail(@Query() q: ListByEmailQuery) {
-    return this.admin.listAssignmentsByEmail(q.email, q.activeOnly ?? false);
-  }
-
-  /** Get only the selected agents (active and not expired) for a user by email */
-  @Get('selected-agents')
-  getSelected(@Query() q: SelectedAgentsQuery) {
-    return this.admin.getSelectedAgentsByEmail(q.email);
-  }
 
   /**
    * Assign all agents from a single group (identified by id or name) to a user by email.
@@ -563,6 +479,12 @@ export class AdminController {
     return this.admin.listAgentGroups(q);
   }
 
+  /** Get a single group by ID */
+  @Get('groups/:id')
+  getGroup(@Param() p: GroupIdParam) {
+    return this.admin.getAgentGroupById(p.id);
+  }
+
   /** Add agents to a group (deduped, idempotent) */
   @Post('groups/:id/agents')
   addAgents(@Param() p: GroupIdParam, @Body() dto: AgentsArrayDto) {
@@ -585,6 +507,26 @@ export class AdminController {
   @Get('groups/:id/agents/list')
   getGroupAgents(@Param() p: GroupIdParam) {
     return this.admin.listGroupAgents(p.id);
+  }
+
+  /** Add agents to a group and assign them to a user by email */
+  @Post('groups/agents/assign')
+  addAgentsToGroupAndAssign(@Body() dto: AddAgentsToGroupAndAssignDto) {
+    const { selector } = dto;
+    if (!selector?.groupId && !selector?.groupName) {
+      throw new BadRequestException('Provide selector.groupId or selector.groupName');
+    }
+    return this.admin.addAgentsToGroupAndAssignByEmail(
+      dto.email,
+      selector.groupId ? { groupId: selector.groupId } : { groupName: selector.groupName! },
+      dto.agentNames,
+      {
+        startsAt: dto.startsAt,
+        expiresAt: dto.expiresAt,
+        durationDays: dto.durationDays ?? undefined,
+        isActive: dto.isActive,
+      },
+    );
   }
 
   /* ======= CREATE GROUP WITH AGENTS (and optional immediate assign) ======= */

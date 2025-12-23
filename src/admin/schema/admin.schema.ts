@@ -151,41 +151,7 @@ export const BulkUpsertAssignmentsSchema = z.object({
     .min(1),
 });
 
-/* ===========================================================
- * Email-based flows (used by your AdminController/AdminService)
- * =========================================================== */
 
-export const AssignSingleByEmailSchema = z.object({
-  email: Email,
-  agentName: AgentNameEnum,
-  startsAt: CoercedDate.optional(),
-  expiresAt: CoercedDateOrNull.optional(), // null clears expiry
-  durationDays: CoercedPositiveInt.optional(),
-  isActive: Bool.optional(),
-});
-
-export const AssignBulkByEmailSchema = z.object({
-  email: Email,
-  agentNames: z.array(AgentNameEnum).min(1),
-  startsAt: CoercedDate.optional(),
-  expiresAt: CoercedDateOrNull.optional(),
-  durationDays: CoercedPositiveInt.optional(),
-  isActive: Bool.optional(),
-});
-
-export const DeactivateByEmailSchema = z.object({
-  email: Email,
-  agentName: AgentNameEnum,
-});
-
-export const ListByEmailQuerySchema = z.object({
-  email: Email,
-  activeOnly: BoolFromQuery.optional(),
-});
-
-export const SelectedAgentsByEmailQuerySchema = z.object({
-  email: Email,
-});
 
 /* ===========================================================
  * Agent Groups (admin-defined groups of AgentName)
@@ -303,11 +269,7 @@ export type BulkUpsertAssignmentsDto = z.infer<typeof BulkUpsertAssignmentsSchem
 export type FindUserDto = z.infer<typeof FindUserSchema>;
 export type AssignmentByIdDto = z.infer<typeof AssignmentByIdSchema>;
 
-export type AssignSingleByEmailDto = z.infer<typeof AssignSingleByEmailSchema>;
-export type AssignBulkByEmailDto = z.infer<typeof AssignBulkByEmailSchema>;
-export type DeactivateByEmailDto = z.infer<typeof DeactivateByEmailSchema>;
-export type ListByEmailQueryDto = z.infer<typeof ListByEmailQuerySchema>;
-export type SelectedAgentsByEmailQueryDto = z.infer<typeof SelectedAgentsByEmailQuerySchema>;
+
 
 export type CreateAgentGroupDto = z.infer<typeof CreateAgentGroupSchema>;
 export type UpdateAgentGroupDto = z.infer<typeof UpdateAgentGroupSchema>;
