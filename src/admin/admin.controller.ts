@@ -598,6 +598,19 @@ export class AdminController {
     );
   }
 
+  /** Admin: permanently delete a GROUP assignment for a user */
+  @Delete('group-assignments')
+  deleteGroupAssignment(@Body() dto: DeactivateGroupByEmailDto) {
+    const { selector } = dto;
+    if (!selector?.groupId && !selector?.groupName) {
+      throw new BadRequestException('Provide selector.groupId or selector.groupName');
+    }
+    return this.admin.deleteGroupAssignmentByEmail(
+      dto.email,
+      selector.groupId ? { groupId: selector.groupId } : { groupName: selector.groupName! },
+    );
+  }
+
   /* ========================== USER SELF-SERVICE ========================== */
 
   /** User: update their own GROUP assignment fields */

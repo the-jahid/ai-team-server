@@ -920,6 +920,25 @@ export class AdminService {
     });
   }
 
+  /** Admin: permanently delete a GROUP assignment for a user */
+  async deleteGroupAssignmentByEmail(
+    email: string,
+    selector: GroupSelector,
+  ): Promise<{ deleted: boolean; id: string }> {
+    const user = await this.getUserByEmail(email.trim());
+    const groupId = await this.resolveGroupId(selector);
+    const existing = await this.prisma.assignedGroup.findFirst({
+      where: { userId: user.id, groupId },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Group assignment not found for ${email}`);
+    }
+    await this.prisma.assignedGroup.delete({
+      where: { id: existing.id },
+    });
+    return { deleted: true, id: existing.id };
+  }
+
   /** User self-service: update their own GROUP assignment */
   async updateMyGroupAssignmentByEmail(
     email: string,
