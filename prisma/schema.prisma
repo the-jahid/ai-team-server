@@ -21,6 +21,7 @@ enum AgentName {
   NIKO
   ALADINO
   LAURA
+  DAN
 
   // --- test agents ---
   TEST_JIM
@@ -34,6 +35,7 @@ enum AgentName {
   TEST_NIKO
   TEST_ALADINO
   TEST_LAURA
+  TEST_DAN
 }
 
 model User {

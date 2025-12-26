@@ -397,12 +397,53 @@ class DeactivateMyGroupAssignmentDto {
   selector!: GroupSelectorDto;
 }
 
+/** Get agents by email (optionally filtered by group) */
+class GetAgentsByEmailQuery {
+  @IsEmail()
+  email!: string;
+
+  @IsOptional()
+  @IsUUID()
+  groupId?: string;
+
+  @IsOptional()
+  @IsString()
+  groupName?: string;
+
+  @IsOptional()
+  @Transform(toBool)
+  @IsBoolean()
+  activeOnly?: boolean;
+}
+
 /* ------------------------------- Controller ------------------------------- */
 
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('admin')
 export class AdminController {
   constructor(private readonly admin: AdminService) { }
+
+  /**
+   * Get agents for a user by email, optionally filtered by a specific group.
+   * Query params:
+   *   - email (required): user email
+   *   - groupId (optional): filter by group ID
+   *   - groupName (optional): filter by group name
+   *   - activeOnly (optional, default true): only return active non-expired agents
+   */
+  @Get('agents-by-email')
+  getAgentsByEmail(@Query() q: GetAgentsByEmailQuery) {
+    const selector = q.groupId
+      ? { groupId: q.groupId }
+      : q.groupName
+        ? { groupName: q.groupName }
+        : null;
+    return this.admin.getAgentsByEmailAndGroup(
+      q.email,
+      selector,
+      q.activeOnly ?? true,
+    );
+  }
 
 
 

@@ -1029,6 +1029,81 @@ export class AdminService {
     });
   }
 
+  /**
+   * Get agents by email, optionally filtered by a specific group.
+   * If selector is provided, returns only agents from that group that are assigned to the user.
+   * If selector is not provided, returns all active assigned agents for the user.
+   */
+  async getAgentsByEmailAndGroup(
+    email: string,
+    selector?: GroupSelector | null,
+    activeOnly = true,
+  ): Promise<{
+    email: string;
+    agents: AgentName[];
+    group?: { id: string; name: string; description: string | null };
+  }> {
+    if (!email?.trim()) throw new BadRequestException('email is required');
+    const user = await this.getUserByEmail(email.trim());
+    const now = new Date();
+
+    // If group selector is provided, filter by that group
+    if (selector) {
+      const groupId = await this.resolveGroupId(selector);
+      const group = await this.prisma.agentGroup.findUnique({ where: { id: groupId } });
+      if (!group) throw new NotFoundException(`AgentGroup not found`);
+
+      // Get agents in this group
+      const groupAgents = await this.prisma.agentGroupItem.findMany({
+        where: { groupId },
+        select: { agentName: true },
+      });
+      const groupAgentNames = new Set(groupAgents.map((g) => g.agentName));
+
+      // Get user's assigned agents that are also in this group
+      const where: Prisma.AssignedAgentWhereInput = {
+        userId: user.id,
+        agentName: { in: Array.from(groupAgentNames) },
+        ...(activeOnly ? { isActive: true } : {}),
+        ...(activeOnly ? { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] } : {}),
+      };
+
+      const assignments = await this.prisma.assignedAgent.findMany({
+        where,
+        select: { agentName: true },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      return {
+        email: user.email,
+        agents: assignments.map((a) => a.agentName),
+        group: {
+          id: group.id,
+          name: group.name,
+          description: group.description,
+        },
+      };
+    }
+
+    // No group filter - return all assigned agents
+    const where: Prisma.AssignedAgentWhereInput = {
+      userId: user.id,
+      ...(activeOnly ? { isActive: true } : {}),
+      ...(activeOnly ? { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] } : {}),
+    };
+
+    const assignments = await this.prisma.assignedAgent.findMany({
+      where,
+      select: { agentName: true },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return {
+      email: user.email,
+      agents: assignments.map((a) => a.agentName),
+    };
+  }
+
   /** Return all user emails as a flat string[] */
   async listAllEmails(): Promise<{ email: string; name: string | null }[]> {
     const rows = await this.prisma.user.findMany({
