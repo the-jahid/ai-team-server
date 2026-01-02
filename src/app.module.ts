@@ -5,15 +5,16 @@ import { PrismaModule } from './prisma/prisma.module';
 import { UserModule } from './user/user.module';
 import { ClerkModule } from './clerk/clerk.module';
 import { AdminModule } from './admin/admin.module';
+import { ConversationModule } from './conversations/conversation.module';
 
 
 
 @Module({
-  imports: [PrismaModule, UserModule, ClerkModule, AdminModule ],
+  imports: [PrismaModule, UserModule, ClerkModule, AdminModule, ConversationModule],
   controllers: [AppController],
   providers: [AppService],
 })
-export class AppModule {}
+export class AppModule { }
 
 
 
