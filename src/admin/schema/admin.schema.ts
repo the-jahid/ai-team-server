@@ -15,6 +15,9 @@ export const AgentNameEnum = z.enum([
   "ALADINO",
   "LAURA",
   "DAN",
+  "MAX",
+  "SOFIA",
+  "ROBERTA",
 
   // --- test agents ---
   "TEST_JIM",
@@ -29,6 +32,9 @@ export const AgentNameEnum = z.enum([
   "TEST_ALADINO",
   "TEST_LAURA",
   "TEST_DAN",
+  "TEST_MAX",
+  "TEST_SOFIA",
+  "TEST_ROBERTA",
 ]);
 
 /** ===== Helpers ===== */
