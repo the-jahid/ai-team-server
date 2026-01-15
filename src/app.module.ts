@@ -6,11 +6,12 @@ import { UserModule } from './user/user.module';
 import { ClerkModule } from './clerk/clerk.module';
 import { AdminModule } from './admin/admin.module';
 import { ConversationModule } from './conversations/conversation.module';
+import { UserPreferenceModule } from './user-preference/user-preference.module';
 
 
 
 @Module({
-  imports: [PrismaModule, UserModule, ClerkModule, AdminModule, ConversationModule],
+  imports: [PrismaModule, UserModule, ClerkModule, AdminModule, ConversationModule, UserPreferenceModule],
   controllers: [AppController],
   providers: [AppService],
 })
