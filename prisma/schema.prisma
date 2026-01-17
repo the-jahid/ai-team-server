@@ -51,6 +51,7 @@ enum ContentLanguage {
   PORTOGHESE
   ALTRO
 }
+
 enum ToneOfVoice {
   PROFESSIONALE_FORMALE
   AMICHEVOLE_INFORMALE
@@ -60,6 +61,7 @@ enum ToneOfVoice {
   INNOVATIVO_VISIONARIO
   DIVERTENTE_CREATIVO
 }
+
 enum MarketingKnowledge {
   BASE
   INTERMEDIO
